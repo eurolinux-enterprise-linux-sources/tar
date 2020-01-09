@@ -5,7 +5,7 @@ Summary: A GNU file archiving program
 Name: tar
 Epoch: 2
 Version: 1.26
-Release: 29%{?dist}
+Release: 31%{?dist}
 License: GPLv3+
 Group: Applications/Archiving
 URL: http://www.gnu.org/software/tar/
@@ -118,6 +118,16 @@ Patch17: tar-1.26-xattrs-include-implies-xattrs.patch
 # ~> #1024095, #1024268
 Patch18: tar-1.27-sparse-stat-detection.patch
 
+# Don't add "false" default acls when during extraction (#1220890)
+# ~> #1220890
+Patch19: tar-1.26-default-acls.patch
+
+# Make sure getfilecon's wrapper set's freed pointer to NULL to avoid double
+# free later in client code.
+# ~> upstream commit (gnulib): b6b3ed1fa4c
+# ~> rhbz#1347396
+Patch20: tar-1.26-dont-segfault-with-disabled-selinux.patch
+
 # Silence gcc warnings
 # ~> upstream tar: 17f99bc6f, 5bb0433
 # ~> upstream paxutils: 0b3d84a0
@@ -174,6 +184,8 @@ the rmt package on the remote box.
 %patch16 -p1 -b .xattrs-documentation
 %patch17 -p1 -b .xattrs-if-xattrs-include
 %patch18 -p1 -b .sparse-stat-detection
+%patch19 -p1 -b .default-acls
+%patch20 -p1 -b .disabled-selinux
 %patch999 -p1 -b .silence-gcc
 
 autoreconf -v
@@ -232,6 +244,12 @@ fi
 %{_infodir}/tar.info*
 
 %changelog
+* Mon Jun 20 2016 Pavel Raiskup <praiskup@redhat.com> - 1.26-31
+- avoid double free in selinux code (rhbz#1347396)
+
+* Thu Jun 04 2015 Pavel Raiskup <praiskup@redhat.com> - 1.26-30
+- don't mistakenly set default ACLs (#1220890)
+
 * Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 2:1.26-29
 - Mass rebuild 2014-01-24
 

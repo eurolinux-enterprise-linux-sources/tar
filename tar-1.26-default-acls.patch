@@ -1,0 +1,267 @@
+From e3a7b9c8f26ca3b5a9aedd4c1d596a4a8504c812 Mon Sep 17 00:00:00 2001
+From: Pavel Raiskup <praiskup@redhat.com>
+Date: Thu, 4 Jun 2015 09:30:38 +0200
+Subject: [PATCH] acls: don't mistakenly set default ACLs
+
+Upstream commits
+efbf4cce0b93e8c5a5fc93335b917bbeae2f67cb
+9df17e6005e7a333399e3dc21a7afec75565c767
+7fe7adcbb985e78aaf9f78051fa26167779be1f6
+---
+ configure.ac       |   2 +
+ src/xattrs.c       |  37 ++++++++++++---
+ tests/Makefile.am  |   1 +
+ tests/acls03.at    | 131 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ tests/testsuite.at |   1 +
+ 5 files changed, 165 insertions(+), 7 deletions(-)
+ create mode 100644 tests/acls03.at
+
+diff --git a/configure.ac b/configure.ac
+index 9b3e0c8..7ccb579 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -85,6 +85,8 @@ if test "x$with_posix_acls" != "xno"; then
+   AC_SEARCH_LIBS([acl_set_fd],    [acl pacl],, [with_posix_acl=no])
+   AC_SEARCH_LIBS([acl_to_text],   [acl pacl],, [with_posix_acl=no])
+   AC_SEARCH_LIBS([acl_from_text], [acl pacl],, [with_posix_acl=no])
++  AC_SEARCH_LIBS([acl_delete_def_file], [acl pacl],, [with_posix_acl=no])
++  AC_SEARCH_LIBS([acl_free], [acl pacl],, [with_posix_acl=no])
+   if test "x$with_posix_acls" != xno; then
+     AC_DEFINE(HAVE_POSIX_ACLS,,[Define when we have working POSIX acls])
+   fi
+diff --git a/src/xattrs.c b/src/xattrs.c
+index bdf6ba0..5bd4b02 100644
+--- a/src/xattrs.c
++++ b/src/xattrs.c
+@@ -61,6 +61,7 @@ static struct
+ acl_t acl_get_file_at (int dirfd, const char *file, acl_type_t type);
+ int acl_set_file_at (int dirfd, const char *file, acl_type_t type, acl_t acl);
+ int file_has_acl_at (int dirfd, char const *, struct stat const *);
++int acl_delete_def_file_at (int, char const *);
+ 
+ /* acl_get_file_at */
+ #define AT_FUNC_NAME acl_get_file_at
+@@ -88,6 +89,17 @@ int file_has_acl_at (int dirfd, char const *, struct stat const *);
+ #undef AT_FUNC_POST_FILE_PARAM_DECLS
+ #undef AT_FUNC_POST_FILE_ARGS
+ 
++/* acl_delete_def_file_at */
++#define AT_FUNC_NAME acl_delete_def_file_at
++#define AT_FUNC_F1 acl_delete_def_file
++#define AT_FUNC_POST_FILE_PARAM_DECLS
++#define AT_FUNC_POST_FILE_ARGS
++#include "at-func.c"
++#undef AT_FUNC_NAME
++#undef AT_FUNC_F1
++#undef AT_FUNC_POST_FILE_PARAM_DECLS
++#undef AT_FUNC_POST_FILE_ARGS
++
+ /* gnulib file_has_acl_at */
+ #define AT_FUNC_NAME file_has_acl_at
+ #define AT_FUNC_F1 file_has_acl
+@@ -187,7 +199,8 @@ fixup_extra_acl_fields (char *ptr)
+   return ptr;
+ }
+ 
+-/* "system.posix_acl_access" */
++/* Set the "system.posix_acl_access/system.posix_acl_default" extended
++   attribute.  Called only when acls_option > 0. */
+ static void
+ xattrs__acls_set (struct tar_stat_info const *st,
+                   char const *file_name, int type,
+@@ -199,15 +212,25 @@ xattrs__acls_set (struct tar_stat_info const *st,
+     {
+       /* assert (strlen (ptr) == len); */
+       ptr = fixup_extra_acl_fields (ptr);
+-
+       acl = acl_from_text (ptr);
+-      acls_option = 1;
+     }
+-  else if (acls_option > 0)
++  else if (def)
++    {
++      /* No "default" IEEE 1003.1e ACL set for directory.  At this moment,
++         FILE_NAME may already have inherited default acls from parent
++         directory;  clean them up. */
++      if (acl_delete_def_file_at (chdir_fd, file_name))
++        WARNOPT (WARN_XATTR_WRITE,
++                (0, errno,
++                 _("acl_delete_def_file_at: Cannot drop default POSIX ACLs "
++                   "for file '%s'"),
++                 file_name));
++      return;
++    }
++  else
++    /* There is nothing like "acl_delete_def_file" for non-default acls, we
++       need to re-set ACLs based on permission bits */
+     acl = perms2acl (st->stat.st_mode);
+-  else
+-    return;  /* don't call acl functions unless we first hit an ACL, or
+-		--acls was passed explicitly */
+ 
+   if (!acl)
+     {
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index b0da439..228e936 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -179,6 +179,7 @@ TESTSUITE_AT = \
+  xattr05.at\
+  acls01.at\
+  acls02.at\
++ acls03.at\
+  selnx01.at\
+  selacl01.at\
+  capabs_raw01.at
+diff --git a/tests/acls03.at b/tests/acls03.at
+new file mode 100644
+index 0000000..83c5bdc
+--- /dev/null
++++ b/tests/acls03.at
+@@ -0,0 +1,131 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++#
++# Test suite for GNU tar.
++# Copyright 2013, 2014 Free Software Foundation, Inc.
++
++# This file is part of GNU tar.
++
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++#
++# Test description:
++#
++# Check the storing/restoring with/without default ACLs.  When --acls is passed,
++# restored directory tree should always match archive contents (even when the
++# archive does not contain any ACLs).
++#
++# References:
++# http://www.mail-archive.com/bug-tar@gnu.org/msg04355.html
++
++AT_SETUP([acls: default ACLs])
++AT_KEYWORDS([xattrs acls acls03])
++
++m4_define([ACL_LISTDIR], [
++    cd $1
++    $1="$(find d1 | sort | xargs -n 1 getfacl)"
++    cd ..
++])
++
++m4_define([ACL_ASSERT], [
++    echo "$$1" > $1.log
++    echo "$$2" > $2.log
++    if test ! "$$1" "$3" "$$2"; then
++        echo "bad '$1' against '$2' output"
++    fi
++])
++
++AT_TAR_CHECK([
++AT_XATTRS_UTILS_PREREQ
++AT_ACLS_PREREQ
++AT_SORT_PREREQ
++
++MYNAME=$( id -un )
++MYGROUP=$( id -gn )
++
++# Prepare directory structure with default ACLs
++mkdir -p pure/d1/d2
++genfile --file pure/d1/f2a
++genfile --file pure/d1/f2b
++genfile --file pure/d1/d2/f3a
++genfile --file pure/d1/d2/f3b
++setfacl    -m g:$MYGROUP:r-x pure/d1
++setfacl -d -m g:$MYGROUP:rwx pure/d1
++setfacl -d -m u:$MYNAME:rwx  pure/d1
++# "*a" files have "some" additional ACLs
++setfacl    -m u:$MYNAME:--- pure/d1/d2/f3a
++setfacl    -m u:$MYNAME:--- pure/d1/f2a
++
++# use default format (no acls stored)
++tar -cf noacl.tar -C pure d1
++
++# use posix format, acls stored
++tar --acls -cf acl.tar -C pure d1
++
++# Directory names are chosen based on "how the files were extracted from
++# archive".  Equivalent no* tags are used also:
++#   ^sacl_    — extracted archive has stored ACLs
++#   _def_     — target directory (-C) has default ACLs
++#   _optacl$  — extraction was done with --acls option
++
++mkdir sacl_def_optacl
++mkdir sacl_def_optnoacl
++mkdir sacl_nodef_optacl
++mkdir sacl_nodef_optnoacl
++mkdir nosacl_def_optacl
++mkdir nosacl_def_optnoacl
++mkdir nosacl_nodef_optacl
++mkdir nosacl_nodef_optnoacl
++
++setfacl -d -m u:$MYNAME:---  nosacl_def_optnoacl sacl_def_optnoacl sacl_def_optacl nosacl_def_optacl
++setfacl -d -m g:$MYGROUP:--- nosacl_def_optnoacl sacl_def_optnoacl sacl_def_optacl nosacl_def_optacl
++
++tar -xf acl.tar -C sacl_nodef_optnoacl
++tar --acls -xf acl.tar -C sacl_nodef_optacl
++tar -xf acl.tar -C sacl_def_optnoacl
++tar --acls -xf acl.tar -C sacl_def_optacl
++tar -xf noacl.tar -C nosacl_def_optnoacl
++# _NO_ ACLs in output
++tar -xf noacl.tar -C nosacl_nodef_optnoacl
++tar -xf noacl.tar -C nosacl_nodef_optacl
++tar -cf noacl_repackaged.tar -C nosacl_nodef_optnoacl d1
++# _NO_ ACLs in output (even when default ACLs exist)
++tar --acls -xf noacl_repackaged.tar -C nosacl_def_optacl
++
++ACL_LISTDIR(pure)
++
++ACL_LISTDIR(sacl_def_optacl)
++ACL_LISTDIR(sacl_def_optnoacl)
++ACL_LISTDIR(sacl_nodef_optacl)
++ACL_LISTDIR(sacl_nodef_optnoacl)
++ACL_LISTDIR(nosacl_def_optacl)
++ACL_LISTDIR(nosacl_def_optnoacl)
++ACL_LISTDIR(nosacl_nodef_optacl)
++ACL_LISTDIR(nosacl_nodef_optnoacl)
++
++ACL_ASSERT(pure, sacl_def_optacl, =)
++
++ACL_ASSERT(sacl_def_optacl,     sacl_nodef_optacl,      =)
++ACL_ASSERT(sacl_def_optnoacl,   nosacl_def_optnoacl,    =)
++ACL_ASSERT(sacl_nodef_optnoacl, nosacl_nodef_optnoacl,  =)
++ACL_ASSERT(nosacl_def_optacl,   nosacl_nodef_optacl,    =)
++ACL_ASSERT(nosacl_def_optacl,   nosacl_nodef_optnoacl,  =)
++
++ACL_ASSERT(sacl_def_optacl,     sacl_def_optnoacl,      !=)
++ACL_ASSERT(sacl_def_optacl,     nosacl_def_optnoacl,    !=)
++ACL_ASSERT(nosacl_def_optnoacl, nosacl_nodef_optnoacl,  !=)
++],
++[0],
++[],
++[])
++
++AT_CLEANUP
+diff --git a/tests/testsuite.at b/tests/testsuite.at
+index d5925b3..10cf26a 100644
+--- a/tests/testsuite.at
++++ b/tests/testsuite.at
+@@ -341,6 +341,7 @@ m4_include([xattr05.at])
+ 
+ m4_include([acls01.at])
+ m4_include([acls02.at])
++m4_include([acls03.at])
+ 
+ m4_include([selnx01.at])
+ m4_include([selacl01.at])
+-- 
+2.1.0
+
