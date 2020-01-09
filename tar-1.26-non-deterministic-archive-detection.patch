@@ -1,0 +1,78 @@
+
+From 1847ec67cec36a17354115374954fea211d1f0da Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org.ua>
+Date: Thu, 19 Feb 2015 17:00:58 +0200
+Subject: [PATCH] Improve compression format recognition
+
+Some comressed archives can pass the checksum test, which makes tar
+treat them as uncompressed archives.
+
+* src/buffer.c (check_compressed_archive): Test the checksum only
+if the block we read looks like a valid tar header (i.e. has
+a magic string).
+---
+ src/buffer.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/buffer.c b/src/buffer.c
+index a7d8971..1a96595 100644
+--- a/src/buffer.c
++++ b/src/buffer.c
+@@ -391,7 +391,10 @@ check_compressed_archive (bool *pshort)
+   /* Restore global values */
+   read_full_records = sfr;
+ 
+-  if (tar_checksum (record_start, true) == HEADER_SUCCESS)
++  if ((strcmp (record_start->header.magic, TMAGIC) == 0 ||
++       strcmp (record_start->buffer + offsetof (struct posix_header, magic),
++	       OLDGNU_MAGIC) == 0) &&
++      tar_checksum (record_start, true) == HEADER_SUCCESS)
+     /* Probably a valid header */
+     return ct_tar;
+ 
+-- 
+2.13.5
+
+
+
+From 1e8b786e651d174a5fc9bf63a08d00c2d592ee3e Mon Sep 17 00:00:00 2001
+From: Pavel Raiskup <praiskup@redhat.com>
+Date: Thu, 30 Mar 2017 13:30:15 +0200
+Subject: [PATCH] Fix non-deterministic archive type detection
+
+Due to analysis of partly uninitialized read-ahead buffer
+(short_read call), we sometimes mistakenly classified very small
+compressed archives as non-compressed; which in turn caused
+extraction failure.
+
+* src/buffer.c (check_compressed_archive): Don't assume that
+archives smaller than BLOCKSIZE could be non-compressed, as tar
+header always has at least one block.
+---
+ src/buffer.c | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/src/buffer.c b/src/buffer.c
+index 57fe813..6f96c2f 100644
+--- a/src/buffer.c
++++ b/src/buffer.c
+@@ -402,10 +402,12 @@ check_compressed_archive (bool *pshort)
+   /* Restore global values */
+   read_full_records = sfr;
+ 
+-  if ((strcmp (record_start->header.magic, TMAGIC) == 0 ||
+-       strcmp (record_start->buffer + offsetof (struct posix_header, magic),
+-	       OLDGNU_MAGIC) == 0) &&
+-      tar_checksum (record_start, true) == HEADER_SUCCESS)
++  if (record_start != record_end /* no files smaller than BLOCKSIZE */
++      && (strcmp (record_start->header.magic, TMAGIC) == 0
++          || strcmp (record_start->buffer + offsetof (struct posix_header,
++                                                      magic),
++                     OLDGNU_MAGIC) == 0)
++      && tar_checksum (record_start, true) == HEADER_SUCCESS)
+     /* Probably a valid header */
+     return ct_tar;
+ 
+-- 
+2.13.5
+

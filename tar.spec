@@ -5,7 +5,7 @@ Summary: A GNU file archiving program
 Name: tar
 Epoch: 2
 Version: 1.26
-Release: 32%{?dist}
+Release: 34%{?dist}
 License: GPLv3+
 Group: Applications/Archiving
 URL: http://www.gnu.org/software/tar/
@@ -151,6 +151,27 @@ Patch23: tar-1.26-xattrs-exclude-include-repair.patch
 # ~> rhbz#1350640
 Patch24: tar-1.26-keep-directory-symlink.patch
 
+# Fix non-determinism in archive-type-heuristic
+# ~> upstream: 1847ec67cec + 1e8b786e651
+# ~> rhbz#1437297
+Patch25: tar-1.26-non-deterministic-archive-detection.patch
+
+# Avoid tar to hang with --extract --xatrrs and --skip-old-files options
+# ~> upstream: 597b0ae509 and ca9399d4e
+# -> proposed: https://www.mail-archive.com/bug-tar@gnu.org/msg05229.html
+# ~> rhbz#1408168
+Patch26: tar-1.26-xattrs-skip-old-files-hangs.patch
+
+# List sparse files of 8GB+ properly, without failure.
+# ~> upstream: 586a6263e9d97 ec94fbdf458ad
+# ~> paxutils-upstream: 45af1632aa64a 58b8ac114790e
+Patch27: tar-1.26-large-sparse-file-listing.patch
+
+# Document (and test) --keep-directory-option
+# ~> upstream: d06126f814563b01e598b85a8cc233604a2948f2
+# ~> rhbz#1504146
+Patch28: tar-1.26-keep-directory-symlink-doc-and-test.patch
+
 # Silence gcc warnings
 # ~> upstream tar: 17f99bc6f, 5bb0433
 # ~> upstream paxutils: 0b3d84a0
@@ -213,6 +234,10 @@ the rmt package on the remote box.
 %patch22 -p1 -b .directory
 %patch23 -p1 -b .xattrs-exclude-include
 %patch24 -p1 -b .keep-directory-symlink
+%patch25 -p1 -b .fix-archive-detection-heuristic
+%patch26 -p1 -b .extract-xattrs-hangs
+%patch27 -p1 -b .large-sparse-file-listing
+%patch28 -p1 -b .test-and-doc-for-keep-dir-symlink
 %patch999 -p1 -b .silence-gcc
 
 autoreconf -v
@@ -271,6 +296,14 @@ fi
 %{_infodir}/tar.info*
 
 %changelog
+* Thu Oct 19 2017 Pavel Raiskup <praiskup@redhat.com> - 1.26-34
+- document --keep-directory-symlink in manual page (rhbz#1504146)
+
+* Thu Sep 07 2017 Pavel Raiskup <praiskup@redhat.com> - 1.26-33
+- extract: deterministic archive type detection (rhbz#1437297)
+- avoid hang when extracting with --xattrs --skip-old-files (rhbz#1408168)
+- fix listing of large sparse members (rhbz#1347229)
+
 * Tue Feb 28 2017 Tomas Repik <trepik@redhat.com> - 2:1.26-32
 - restore incremental backups correctly, files were not being removed (rhbz#1184697)
 - fix the behavior of tar when --directory option is used together with
