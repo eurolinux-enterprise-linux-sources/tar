@@ -1,0 +1,3501 @@
+From 4bf4efe97d25784eb5e56c8ee337af3c7866ec34 Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org.ua>
+Date: Tue, 24 Sep 2013 14:01:13 +0300
+Subject: [PATCH 01/11] Fix normalize_filename.
+
+The function did not take into account eventual -C options, which
+in particular led to various problems when using -C and --remove-files
+together.
+
+* src/common.h (namebuf_add_dir,namebuf_finish)
+(tar_getcwd): New prototypes.
+* src/misc.c (namebuf_add_dir,namebuf_finish)
+(tar_getcwd): New functions.
+(normalize_filename): Use tar_getcwd.
+---
+ src/common.h |  4 ++++
+ src/misc.c   | 41 ++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/src/common.h b/src/common.h
+index 16ba401..85a6977 100644
+--- a/src/common.h
++++ b/src/common.h
+@@ -603,6 +603,10 @@ typedef struct namebuf *namebuf_t;
+ namebuf_t namebuf_create (const char *dir);
+ void namebuf_free (namebuf_t buf);
+ char *namebuf_name (namebuf_t buf, const char *name);
++void namebuf_add_dir (namebuf_t buf, const char *name);
++char *namebuf_finish (namebuf_t buf);
++
++char *tar_getcwd (void);
+ 
+ void code_ns_fraction (int ns, char *p);
+ char const *code_timespec (struct timespec ts, char *sbuf);
+diff --git a/src/misc.c b/src/misc.c
+index b75f2ab..f45f79a 100644
+--- a/src/misc.c
++++ b/src/misc.c
+@@ -283,7 +283,7 @@ normalize_filename (const char *name)
+          getcwd is slow, it might fail, and it does not necessarily
+          return a canonical name even when it succeeds.  Perhaps we
+          can use dev+ino pairs instead of names?  */
+-      copy = xgetcwd ();
++      copy = tar_getcwd ();
+       if (copy)
+         {
+           size_t copylen = strlen (copy);
+@@ -777,6 +777,21 @@ chdir_do (int i)
+     }
+ }
+ 
++char *
++tar_getcwd (void)
++{
++  static char *cwd;
++  namebuf_t nbuf;
++  int i;
++
++  if (!cwd)
++    cwd = xgetcwd ();
++  nbuf = namebuf_create (cwd);
++  for (i = 1; i <= chdir_current; i++)
++    namebuf_add_dir (nbuf, wd[i].name);
++  return namebuf_finish (nbuf);
++}
++
+ void
+ close_diag (char const *name)
+ {
+@@ -945,3 +960,27 @@ namebuf_name (namebuf_t buf, const char *name)
+
+   return ret;
+ }
++
++void
++namebuf_add_dir (namebuf_t buf, const char *name)
++{
++  static char dirsep[] = { DIRECTORY_SEPARATOR, 0 };
++  if (!ISSLASH (buf->buffer[buf->dir_length - 1]))
++    {
++      namebuf_name (buf, dirsep);
++      buf->dir_length++;
++    }
++  namebuf_name (buf, name);
++  buf->dir_length += strlen (name);
++}
++
++char *
++namebuf_finish (namebuf_t buf)
++{
++  char *res = buf->buffer;
++
++  if (ISSLASH (buf->buffer[buf->dir_length - 1]))
++    buf->buffer[buf->dir_length] = 0;
++  free (buf);
++  return res;
++}
+-- 
+2.9.3
+
+
+From 272e1c879644b3684031acd62c9adb0adc5133b5 Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org.ua>
+Date: Wed, 25 Sep 2013 15:58:43 +0300
+Subject: [PATCH 02/11] Improve tar_getcwd
+
+* src/common.h (tar_getcwd): Return pointer is const.
+* src/misc.c (wd) <cwd>: New member.
+(chdir_arg): Initialize cwd.
+(tar_getcwd): Use cwd member to cache the result.  Take into
+account absolute pathnames,
+(normalize_filename): Don't free the value
+returned from tar_getcwd.
+* src/names.c (name_next_elt): Remove leftover call chdir().
+* tests/Makefile.am: Add new tests.
+* tests/testsuite.at: Likewise.
+
+* tests/incr08.at: New testcase.
+* tests/remfiles04.at: New testcase.
+* tests/remfiles05.at: New testcase.
+* tests/remfiles06.at: New testcase.
+* tests/remfiles07.at: New testcase.
+---
+ src/common.h        |  2 +-
+ src/misc.c          | 57 +++++++++++++++++++++++------------
+ src/names.c         |  3 +-
+ tests/Makefile.am   |  5 ++++
+ tests/incr08.at     | 86 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ tests/remfiles04.at | 53 +++++++++++++++++++++++++++++++++
+ tests/remfiles05.at | 60 +++++++++++++++++++++++++++++++++++++
+ tests/remfiles06.at | 66 ++++++++++++++++++++++++++++++++++++++++
+ tests/remfiles07.at | 63 +++++++++++++++++++++++++++++++++++++++
+ tests/testsuite.at  |  5 ++++
+ 10 files changed, 378 insertions(+), 22 deletions(-)
+ create mode 100644 tests/incr08.at
+ create mode 100644 tests/remfiles04.at
+ create mode 100644 tests/remfiles05.at
+ create mode 100644 tests/remfiles06.at
+ create mode 100644 tests/remfiles07.at
+
+diff --git a/src/common.h b/src/common.h
+index 85a6977..99f8552 100644
+--- a/src/common.h
++++ b/src/common.h
+@@ -606,7 +606,7 @@ char *namebuf_name (namebuf_t buf, const char *name);
+ void namebuf_add_dir (namebuf_t buf, const char *name);
+ char *namebuf_finish (namebuf_t buf);
+ 
+-char *tar_getcwd (void);
++const char *tar_getcwd (void);
+ 
+ void code_ns_fraction (int ns, char *p);
+ char const *code_timespec (struct timespec ts, char *sbuf);
+diff --git a/src/misc.c b/src/misc.c
+index f45f79a..2fd5280 100644
+--- a/src/misc.c
++++ b/src/misc.c
+@@ -283,21 +283,20 @@ normalize_filename (const char *name)
+          getcwd is slow, it might fail, and it does not necessarily
+          return a canonical name even when it succeeds.  Perhaps we
+          can use dev+ino pairs instead of names?  */
+-      copy = tar_getcwd ();
+-      if (copy)
+-        {
+-          size_t copylen = strlen (copy);
+-          bool need_separator = ! (DOUBLE_SLASH_IS_DISTINCT_ROOT
+-                                   && copylen == 2 && ISSLASH (copy[1]));
+-          copy = xrealloc (copy, copylen + need_separator + strlen (name) + 1);
+-          copy[copylen] = DIRECTORY_SEPARATOR;
+-          strcpy (copy + copylen + need_separator, name);
+-        }
+-      else
+-        WARN ((0, errno, _("Cannot get working directory")));
++      const char *cwd = tar_getcwd ();
++      size_t copylen;
++      bool need_separator;
++
++      copylen = strlen (cwd);
++      need_separator = ! (DOUBLE_SLASH_IS_DISTINCT_ROOT
++			  && copylen == 2 && ISSLASH (cwd[1]));
++      copy = xmalloc (copylen + need_separator + strlen (name) + 1);
++      strcpy (copy, cwd);
++      copy[copylen] = DIRECTORY_SEPARATOR;
++      strcpy (copy + copylen + need_separator, name);
+     }
+ 
+-  if (! copy)
++  if (!copy)
+     copy = xstrdup (name);
+   normalize_filename_x (copy);
+   return copy;
+@@ -632,7 +631,8 @@ struct wd
+ {
+   /* The directory's name.  */
+   char const *name;
+-
++  /* Current working directory; initialized by tar_getcwd */
++  char *cwd;
+   /* If nonzero, the file descriptor of the directory, or AT_FDCWD if
+      the working directory.  If zero, the directory needs to be opened
+      to be used.  */
+@@ -687,6 +687,7 @@ chdir_arg (char const *dir)
+       if (! wd_count)
+ 	{
+ 	  wd[wd_count].name = ".";
++	  wd[wd_count].cwd = NULL;
+ 	  wd[wd_count].fd = AT_FDCWD;
+ 	  wd_count++;
+ 	}
+@@ -704,6 +705,7 @@ chdir_arg (char const *dir)
+     }
+ 
+   wd[wd_count].name = dir;
++  wd[wd_count].cwd = NULL;
+   wd[wd_count].fd = 0;
+   return wd_count++;
+ }
+@@ -777,7 +779,7 @@ chdir_do (int i)
+     }
+ }
+ 
+-char *
++const char *
+ tar_getcwd (void)
+ {
+   static char *cwd;
+@@ -786,10 +788,27 @@ tar_getcwd (void)
+ 
+   if (!cwd)
+     cwd = xgetcwd ();
+-  nbuf = namebuf_create (cwd);
+-  for (i = 1; i <= chdir_current; i++)
+-    namebuf_add_dir (nbuf, wd[i].name);
+-  return namebuf_finish (nbuf);
++  if (!wd)
++    return cwd;
++
++  if (0 == chdir_current || !wd[chdir_current].cwd)
++    {
++      if (IS_ABSOLUTE_FILE_NAME (wd[chdir_current].name))
++	return wd[chdir_current].name;
++
++      if (!wd[0].cwd)
++	wd[0].cwd = cwd;
++
++      for (i = chdir_current - 1; i > 0; i--)
++	if (wd[i].cwd)
++	  break;
++ 
++      nbuf = namebuf_create (wd[i].cwd);
++      for (i++; i <= chdir_current; i++)
++	namebuf_add_dir (nbuf, wd[i].name);
++      wd[chdir_current].cwd = namebuf_finish (nbuf);
++    }
++  return wd[chdir_current].cwd;
+ }
+ 
+ void
+diff --git a/src/names.c b/src/names.c
+index 3911f8c..8c3052f 100644
+--- a/src/names.c
++++ b/src/names.c
+@@ -351,8 +351,7 @@ name_next_elt (int change_dirs)
+ 
+       if (change_dirs && ep->type == NELT_CHDIR)
+ 	{
+-	  if (chdir (name_buffer) < 0)
+-	    chdir_fatal (name_buffer);
++	  chdir_do (chdir_arg (xstrdup (ep->v.name)));
+ 	}
+       else
+ 	{
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 228e936..1d10360 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -99,6 +99,7 @@ TESTSUITE_AT = \
+  incr05.at\
+  incr06.at\
+  incr07.at\
++ incr08.at\
+  indexfile.at\
+  ignfail.at\
+  label01.at\
+@@ -139,6 +140,10 @@ TESTSUITE_AT = \
+  remfiles01.at\
+  remfiles02.at\
+  remfiles03.at\
++ remfiles04.at\
++ remfiles05.at\
++ remfiles06.at\
++ remfiles07.at\
+  same-order01.at\
+  same-order02.at\
+  shortfile.at\
+diff --git a/tests/incr08.at b/tests/incr08.at
+new file mode 100644
+index 0000000..5210d28
+--- /dev/null
++++ b/tests/incr08.at
+@@ -0,0 +1,86 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: In tar 1.26 listed-incremental with -C and absolute path
++# would malfunction under certain conditions due to buggy filename
++# normalization.
++#
++# The value returned by normalize_filename() is used to populate the "caname"
++# field in both the "directory" structure in incremen.c and the "name"
++# structure in names.c, and in both cases that field is then used in the
++# "hash" and "compare" functions for the related hash tables.  Thus, the
++# fact that the returned value doesn't reflect the operation of previous
++# "-C" options means that it's possible for two different directories to
++# be given the same "caname" value in the hashed structure and thus end up
++# being confused with each other.
++#
++# The bug is triggered when dumping both relative paths after -C and
++# absolute paths that match the process' current working directory.
++#
++# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
++# References: <20130922192135.GJ32256@shire.ontko.com>,
++#             http://lists.gnu.org/archive/html/bug-tar/2013-09/msg00034.html
++
++AT_SETUP([filename normalization])
++AT_KEYWORDS([incremental create incr08])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir tartest
++cd tartest
++mkdir foo
++mkdir foo/subdir
++mkdir foo/subdir/dir1
++mkdir subdir
++mkdir subdir/dir2
++decho A
++find|sort
++
++decho B
++DIR=`pwd`
++tar -cvf ../foo.tar --listed-incremental=../foo.snar -C foo . $DIR 2>../err |\
++  sed "s|$DIR|ABSPATH|"
++sed "s|$DIR|ABSPATH|" ../err >&2
++],
++[0],
++[A
++.
++./foo
++./foo/subdir
++./foo/subdir/dir1
++./subdir
++./subdir/dir2
++B
++./
++./subdir/
++./subdir/dir1/
++ABSPATH/
++ABSPATH/subdir/
++ABSPATH/subdir/dir2/
++],
++[A
++B
++tar: .: Directory is new
++tar: ./subdir: Directory is new
++tar: ./subdir/dir1: Directory is new
++tar: ABSPATH: Directory is new
++tar: ABSPATH/subdir: Directory is new
++tar: ABSPATH/subdir/dir2: Directory is new
++tar: Removing leading `/' from member names
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles04.at b/tests/remfiles04.at
+new file mode 100644
+index 0000000..04df45b
+--- /dev/null
++++ b/tests/remfiles04.at
+@@ -0,0 +1,53 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: Tar 1.26 would remove wrong files when called with
++# --remove-files and -C
++# Reported by: Jörgen Strand <Jorgen.Strand@sonymobile.com>
++# References: <9FC79E5CB90CEC47B9647DCAB7BD327A01AD83B452EE@seldmbx02.corpusers.net>
++#             http://lists.gnu.org/archive/html/bug-tar/2013-09/msg00024.html
++
++AT_SETUP([remove-files with -C])
++AT_KEYWORDS([create remove-files remfiles04])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++echo bar > bar
++echo foobar > foo/bar
++tar -cf foo.tar --remove-files -C foo bar
++echo A
++find . | sort
++echo foobar > foo/bar
++tar -rf foo.tar --remove-files -C foo bar
++echo B
++find . | sort
++],
++[0],
++[A
++.
++./bar
++./foo
++./foo.tar
++B
++.
++./bar
++./foo
++./foo.tar
++],[],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles05.at b/tests/remfiles05.at
+new file mode 100644
+index 0000000..04425a7
+--- /dev/null
++++ b/tests/remfiles05.at
+@@ -0,0 +1,60 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: Tar 1.26 would remove wrong files when invoked with
++# --listed-incremental and -C
++# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
++# References: <20130921171234.GG32256@shire.ontko.com>,
++#             http://lists.gnu.org/archive/html/bug-tar/2013-09/msg00028.html
++
++AT_SETUP([incremental and -C])
++AT_KEYWORDS([incremental create remove-files remfiles05])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++echo bar > bar
++echo foo/bar > foo/bar
++decho A
++find . | sort
++
++decho B
++tar -cvf foo.tar --listed-incremental=foo.snar --remove-files -C foo bar
++decho C
++find . | sort
++],
++[0],
++[A
++.
++./bar
++./foo
++./foo/bar
++B
++bar
++C
++.
++./bar
++./foo
++./foo.snar
++./foo.tar
++],
++[A
++B
++C
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles06.at b/tests/remfiles06.at
+new file mode 100644
+index 0000000..75ddcfa
+--- /dev/null
++++ b/tests/remfiles06.at
+@@ -0,0 +1,66 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: There was a leftover call to chdir in name_next_elt() in
++# tar 1.26.  After commit e3d28d84 this call would confuse the tar_getcwd
++# function.
++# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
++# References: <20130924145657.GM32256@shire.ontko.com>,
++#             http://lists.gnu.org/archive/html/bug-tar/2013-09/msg00045.html
++
++AT_SETUP([incremental with two -C])
++AT_KEYWORDS([incremental create remove-files remfiles06])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir tartest
++cd tartest
++mkdir foo
++echo foo/file > foo/file
++mkdir bar
++echo bar/file > bar/file
++decho A
++find|sort
++
++decho B
++tar -cvf ../foo.tar --remove-files -C foo file -C ../bar file
++
++decho C
++find|sort
++],
++[0],
++[A
++.
++./bar
++./bar/file
++./foo
++./foo/file
++B
++file
++file
++C
++.
++./bar
++./foo
++],
++[A
++B
++C
++],[],[],[gnu])
++
++AT_CLEANUP
++
+diff --git a/tests/remfiles07.at b/tests/remfiles07.at
+new file mode 100644
+index 0000000..84ab625
+--- /dev/null
++++ b/tests/remfiles07.at
+@@ -0,0 +1,63 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: See remfiles06.at
++# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
++# References: <20130924185129.GO32256@shire.ontko.com>
++
++AT_SETUP([incremental with -C to absolute path])
++AT_KEYWORDS([incremental create remove-files remfiles07])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir tartest
++cd tartest
++mkdir foo
++echo foo/file > foo/file
++mkdir bar
++echo bar/file > bar/file
++decho A
++find|sort
++
++DIR=`pwd`
++decho B
++tar -cvf ../foo.tar --remove-files -C foo file -C $DIR/bar file
++
++decho C
++find|sort
++],
++[0],
++[A
++.
++./bar
++./bar/file
++./foo
++./foo/file
++B
++file
++file
++C
++.
++./bar
++./foo
++],
++[A
++B
++C
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/testsuite.at b/tests/testsuite.at
+index 10cf26a..5c805e7 100644
+--- a/tests/testsuite.at
++++ b/tests/testsuite.at
+@@ -260,6 +260,7 @@ m4_include([incr03.at])
+ m4_include([incr05.at])
+ m4_include([incr06.at])
+ m4_include([incr07.at])
++m4_include([incr08.at])
+ 
+ m4_include([filerem01.at])
+ m4_include([filerem02.at])
+@@ -330,6 +331,10 @@ m4_include([grow.at])
+ m4_include([remfiles01.at])
+ m4_include([remfiles02.at])
+ m4_include([remfiles03.at])
++m4_include([remfiles04.at])
++m4_include([remfiles05.at])
++m4_include([remfiles06.at])
++m4_include([remfiles07.at])
+ 
+ m4_include([sigpipe.at])
+ 
+-- 
+2.9.3
+
+
+From 0c5f95ca80d507a00825c8e3fd05ed5ad993ce17 Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org.ua>
+Date: Thu, 26 Sep 2013 15:41:47 +0300
+Subject: [PATCH 03/11] Use relative addressing in deferred unlinks.
+
+* src/common.h (tar_dirname): New function.
+* src/misc.c (normalize_filename_x): Make extern.
+(tar_dirname): New function.
+(tar_getcwd): Take into account absoulte pathnames.
+* src/unlink.c (deferred_unlink) <dir_idx>: New member; keeps the
+value of chdir_current at the moment of structure allocation.
+(flush_deferred_unlinks): Use chdir_do and relative addressing.
+(queue_deferred_unlink): Initialize dir_idx.
+* tests/Makefile.am: Add new tests.
+* tests/testsuite.at: Add new tests.
+* tests/remfiles06.at: Fix description.
+* tests/remfiles07.at: Fix description.
+* tests/remfiles08.at: New test case.
+---
+ src/common.h        |  2 ++
+ src/misc.c          | 28 +++++++++++++++++++---------
+ src/unlink.c        | 27 +++++++++++++++++++++++----
+ tests/Makefile.am   |  1 +
+ tests/remfiles06.at |  4 ++--
+ tests/remfiles07.at |  4 ++--
+ tests/remfiles08.at | 48 ++++++++++++++++++++++++++++++++++++++++++++++++
+ tests/testsuite.at  |  1 +
+ 8 files changed, 98 insertions(+), 17 deletions(-)
+ create mode 100644 tests/remfiles08.at
+
+diff --git a/src/common.h b/src/common.h
+index 99f8552..7d64227 100644
+--- a/src/common.h
++++ b/src/common.h
+@@ -596,6 +596,7 @@ void assign_string (char **dest, const char *src);
+ int unquote_string (char *str);
+ char *zap_slashes (char *name);
+ char *normalize_filename (const char *name);
++void normalize_filename_x (char *name);
+ void replace_prefix (char **pname, const char *samp, size_t slen,
+ 		     const char *repl, size_t rlen);
+ char *tar_savedir (const char *name, int must_exist);
+@@ -607,6 +608,7 @@ void namebuf_add_dir (namebuf_t buf, const char *name);
+ char *namebuf_finish (namebuf_t buf);
+ 
+ const char *tar_getcwd (void);
++const char *tar_dirname (void);
+ 
+ void code_ns_fraction (int ns, char *p);
+ char const *code_timespec (struct timespec ts, char *sbuf);
+diff --git a/src/misc.c b/src/misc.c
+index 2fd5280..c7d51b2 100644
+--- a/src/misc.c
++++ b/src/misc.c
+@@ -229,11 +229,12 @@ zap_slashes (char *name)
+ }
+ 
+ /* Normalize FILE_NAME by removing redundant slashes and "."
+-   components, including redundant trailing slashes.  Leave ".."
+-   alone, as it may be significant in the presence of symlinks and on
+-   platforms where "/.." != "/".  Destructive version: modifies its
+-   argument. */
+-static void
++   components, including redundant trailing slashes.
++   Leave ".." alone, as it may be significant in the presence
++   of symlinks and on platforms where "/.." != "/".
++
++   Destructive version: modifies its argument. */
++void
+ normalize_filename_x (char *file_name)
+ {
+   char *name = file_name + FILE_SYSTEM_PREFIX_LEN (file_name);
+@@ -267,8 +268,9 @@ normalize_filename_x (char *file_name)
+ }
+ 
+ /* Normalize NAME by removing redundant slashes and "." components,
+-   including redundant trailing slashes.  Return a normalized
+-   newly-allocated copy.  */
++   including redundant trailing slashes.
++
++   Return a normalized newly-allocated copy.  */
+ 
+ char *
+ normalize_filename (const char *name)
+@@ -780,6 +782,12 @@ chdir_do (int i)
+ }
+ 
+ const char *
++tar_dirname (void)
++{
++  return wd[chdir_current].name;
++}
++
++const char *
+ tar_getcwd (void)
+ {
+   static char *cwd;
+@@ -794,8 +802,10 @@ tar_getcwd (void)
+   if (0 == chdir_current || !wd[chdir_current].cwd)
+     {
+       if (IS_ABSOLUTE_FILE_NAME (wd[chdir_current].name))
+-	return wd[chdir_current].name;
+-
++	{
++	  wd[chdir_current].cwd = xstrdup (wd[chdir_current].name);
++	  return wd[chdir_current].cwd;
++	}
+       if (!wd[0].cwd)
+ 	wd[0].cwd = cwd;
+ 
+diff --git a/src/unlink.c b/src/unlink.c
+index b281636..10e0b41 100644
+--- a/src/unlink.c
++++ b/src/unlink.c
+@@ -22,7 +22,9 @@
+ struct deferred_unlink
+   {
+     struct deferred_unlink *next;   /* Next unlink in the queue */
+-    char *file_name;                /* Absolute name of the file to unlink */
++    int dir_idx;                    /* Directory index in wd */
++    char *file_name;                /* Name of the file to unlink, relative
++				       to dir_idx */
+     bool is_dir;                    /* True if file_name is a directory */
+     off_t records_written;          /* Number of records written when this
+ 				       entry got added to the queue */
+@@ -68,16 +70,30 @@ static void
+ flush_deferred_unlinks (bool force)
+ {
+   struct deferred_unlink *p, *prev = NULL;
++  int saved_chdir = chdir_current;
+ 
+   for (p = dunlink_head; p; )
+     {
+       struct deferred_unlink *next = p->next;
++
+       if (force
+ 	  || records_written > p->records_written + deferred_unlink_delay)
+ 	{
++          chdir_do (p->dir_idx);
+ 	  if (p->is_dir)
+ 	    {
+-	      if (unlinkat (chdir_fd, p->file_name, AT_REMOVEDIR) != 0)
++	      const char *fname;
++
++	      if (p->file_name[0] == 0 ||
++		  strcmp (p->file_name, ".") == 0)
++		{
++		  fname = tar_dirname ();
++		  chdir_do (p->dir_idx - 1);
++		}
++	      else
++		fname = p->file_name;
++
++	      if (unlinkat (chdir_fd, fname, AT_REMOVEDIR) != 0)
+ 		{
+ 		  switch (errno)
+ 		    {
+@@ -95,7 +111,7 @@ flush_deferred_unlinks (bool force)
+ 			}
+ 		      /* fall through */
+ 		    default:
+-		      rmdir_error (p->file_name);
++		      rmdir_error (fname);
+ 		    }
+ 		}
+ 	    }
+@@ -120,6 +136,7 @@ flush_deferred_unlinks (bool force)
+     }
+   if (!dunlink_head)
+     dunlink_tail = NULL;
++  chdir_do (saved_chdir);
+ }
+ 
+ void
+@@ -145,7 +162,9 @@ queue_deferred_unlink (const char *name, bool is_dir)
+ 
+   p = dunlink_alloc ();
+   p->next = NULL;
+-  p->file_name = normalize_filename (name);
++  p->dir_idx = chdir_current;
++  p->file_name = xstrdup (name);
++  normalize_filename_x (p->file_name);
+   p->is_dir = is_dir;
+   p->records_written = records_written;
+ 
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 1d10360..29ebab1 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -144,6 +144,7 @@ TESTSUITE_AT = \
+  remfiles05.at\
+  remfiles06.at\
+  remfiles07.at\
++ remfiles08.at\
+  same-order01.at\
+  same-order02.at\
+  shortfile.at\
+diff --git a/tests/remfiles06.at b/tests/remfiles06.at
+index 75ddcfa..c2d9876 100644
+--- a/tests/remfiles06.at
++++ b/tests/remfiles06.at
+@@ -22,8 +22,8 @@
+ # References: <20130924145657.GM32256@shire.ontko.com>,
+ #             http://lists.gnu.org/archive/html/bug-tar/2013-09/msg00045.html
+ 
+-AT_SETUP([incremental with two -C])
+-AT_KEYWORDS([incremental create remove-files remfiles06])
++AT_SETUP([remove with two -C])
++AT_KEYWORDS([remove-files remfiles06])
+ 
+ AT_TAR_CHECK([
+ AT_SORT_PREREQ
+diff --git a/tests/remfiles07.at b/tests/remfiles07.at
+index 84ab625..742e0a1 100644
+--- a/tests/remfiles07.at
++++ b/tests/remfiles07.at
+@@ -19,8 +19,8 @@
+ # Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
+ # References: <20130924185129.GO32256@shire.ontko.com>
+ 
+-AT_SETUP([incremental with -C to absolute path])
+-AT_KEYWORDS([incremental create remove-files remfiles07])
++AT_SETUP([remove with -C to absolute path])
++AT_KEYWORDS([create remove-files remfiles07])
+ 
+ AT_TAR_CHECK([
+ AT_SORT_PREREQ
+diff --git a/tests/remfiles08.at b/tests/remfiles08.at
+new file mode 100644
+index 0000000..54f5de1
+--- /dev/null
++++ b/tests/remfiles08.at
+@@ -0,0 +1,48 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: See remfiles06.at
++# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
++# References: <20130926050634.GW32256@shire.ontko.com>
++
++AT_SETUP([remove with -C to absolute and relative paths])
++AT_KEYWORDS([incremental create remove-files remfiles08])
++
++AT_TAR_CHECK([
++mkdir foo
++mkdir bar
++echo foo/foo_file > foo/foo_file
++echo bar/bar_file > bar/bar_file
++decho A
++tar -cvf foo.tar --remove-files -C `pwd`/foo . -C ../bar .
++decho B
++],
++[0],
++[A
++./
++./foo_file
++./
++./bar_file
++B
++.
++./foo.tar
++],
++[A
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/testsuite.at b/tests/testsuite.at
+index 5c805e7..d468dcf 100644
+--- a/tests/testsuite.at
++++ b/tests/testsuite.at
+@@ -335,6 +335,7 @@ m4_include([remfiles04.at])
+ m4_include([remfiles05.at])
+ m4_include([remfiles06.at])
+ m4_include([remfiles07.at])
++m4_include([remfiles08.at])
+ 
+ m4_include([sigpipe.at])
+ 
+-- 
+2.9.3
+
+
+From 195c6f2b71f49ecc374ae01e20d7287f24501178 Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org.ua>
+Date: Fri, 27 Sep 2013 00:59:18 +0300
+Subject: [PATCH 04/11] Bugfix
+
+* tests/remfiles08.at: Restore missing find
+---
+ tests/remfiles08.at | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/tests/remfiles08.at b/tests/remfiles08.at
+index 54f5de1..0649e85 100644
+--- a/tests/remfiles08.at
++++ b/tests/remfiles08.at
+@@ -30,6 +30,7 @@ echo bar/bar_file > bar/bar_file
+ decho A
+ tar -cvf foo.tar --remove-files -C `pwd`/foo . -C ../bar .
+ decho B
++find
+ ],
+ [0],
+ [A
+-- 
+2.9.3
+
+
+From 2cce74ec554ec7fca4c3b1d2963beb6a729881fe Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org.ua>
+Date: Tue, 1 Oct 2013 21:48:30 +0300
+Subject: [PATCH 05/11] Revamp tar_getcwd/normalize_filename stuff.
+
+The changes are based on the discussion with Nathan.
+
+* src/common.h (normalize_filename): Take two arguments. All
+callers updated.
+(tar_getcwd): Replaced with ..
+(tar_getcdpath): New proto.
+* src/misc.c (normalize_filename): Take two arguments.
+(chdir_arg): Populate cwd along with creating the
+structure.
+(tar_getcwd): Removed.
+(tar_getcdpath): New function.
+
+* tests/incr09.at: New test case.
+* tests/Makefile.am: Add new tests.
+* tests/testsuite.at: Likewise.
+---
+ src/common.h       |  4 ++--
+ src/incremen.c     |  4 ++--
+ src/misc.c         | 48 ++++++++++++++++----------------------------
+ src/names.c        |  6 ++----
+ tests/Makefile.am  |  1 +
+ tests/incr09.at    | 59 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ tests/testsuite.at |  1 +
+ 7 files changed, 84 insertions(+), 39 deletions(-)
+ create mode 100644 tests/incr09.at
+
+diff --git a/src/common.h b/src/common.h
+index 7d64227..16b501b 100644
+--- a/src/common.h
++++ b/src/common.h
+@@ -595,7 +595,7 @@ void skip_member (void);
+ void assign_string (char **dest, const char *src);
+ int unquote_string (char *str);
+ char *zap_slashes (char *name);
+-char *normalize_filename (const char *name);
++char *normalize_filename (int cdidx, const char *name);
+ void normalize_filename_x (char *name);
+ void replace_prefix (char **pname, const char *samp, size_t slen,
+ 		     const char *repl, size_t rlen);
+@@ -607,7 +607,7 @@ char *namebuf_name (namebuf_t buf, const char *name);
+ void namebuf_add_dir (namebuf_t buf, const char *name);
+ char *namebuf_finish (namebuf_t buf);
+ 
+-const char *tar_getcwd (void);
++const char *tar_getcdpath (int);
+ const char *tar_dirname (void);
+ 
+ void code_ns_fraction (int ns, char *p);
+diff --git a/src/incremen.c b/src/incremen.c
+index b2ab5bf..cb12bbc 100644
+--- a/src/incremen.c
++++ b/src/incremen.c
+@@ -279,7 +279,7 @@ free_directory (struct directory *dir)
+ static struct directory *
+ attach_directory (const char *name)
+ {
+-  char *cname = normalize_filename (name);
++  char *cname = normalize_filename (chdir_current, name);
+   struct directory *dir = make_directory (name, cname);
+   if (dirtail)
+     dirtail->next = dir;
+@@ -350,7 +350,7 @@ find_directory (const char *name)
+     return 0;
+   else
+     {
+-      char *caname = normalize_filename (name);
++      char *caname = normalize_filename (chdir_current, name);
+       struct directory *dir = make_directory (name, caname);
+       struct directory *ret = hash_lookup (directory_table, dir);
+       free_directory (dir);
+diff --git a/src/misc.c b/src/misc.c
+index c7d51b2..280f85c 100644
+--- a/src/misc.c
++++ b/src/misc.c
+@@ -273,7 +273,7 @@ normalize_filename_x (char *file_name)
+    Return a normalized newly-allocated copy.  */
+ 
+ char *
+-normalize_filename (const char *name)
++normalize_filename (int cdidx, const char *name)
+ {
+   char *copy = NULL;
+ 
+@@ -285,7 +285,7 @@ normalize_filename (const char *name)
+          getcwd is slow, it might fail, and it does not necessarily
+          return a canonical name even when it succeeds.  Perhaps we
+          can use dev+ino pairs instead of names?  */
+-      const char *cwd = tar_getcwd ();
++      const char *cwd = tar_getcdpath (cdidx);
+       size_t copylen;
+       bool need_separator;
+ 
+@@ -689,7 +689,7 @@ chdir_arg (char const *dir)
+       if (! wd_count)
+ 	{
+ 	  wd[wd_count].name = ".";
+-	  wd[wd_count].cwd = NULL;
++	  wd[wd_count].cwd = xgetcwd ();
+ 	  wd[wd_count].fd = AT_FDCWD;
+ 	  wd_count++;
+ 	}
+@@ -707,7 +707,14 @@ chdir_arg (char const *dir)
+     }
+ 
+   wd[wd_count].name = dir;
+-  wd[wd_count].cwd = NULL;
++  if (IS_ABSOLUTE_FILE_NAME (wd[wd_count].name))
++    wd[wd_count].cwd = xstrdup (wd[wd_count].name);
++  else
++    {
++      namebuf_t nbuf = namebuf_create (wd[wd_count - 1].cwd);
++      namebuf_add_dir (nbuf, wd[wd_count].name);
++      wd[wd_count].cwd = namebuf_finish (nbuf);
++    }
+   wd[wd_count].fd = 0;
+   return wd_count++;
+ }
+@@ -788,37 +795,16 @@ tar_dirname (void)
+ }
+ 
+ const char *
+-tar_getcwd (void)
++tar_getcdpath (int idx)
+ {
+-  static char *cwd;
+-  namebuf_t nbuf;
+-  int i;
+-
+-  if (!cwd)
+-    cwd = xgetcwd ();
+   if (!wd)
+-    return cwd;
+-
+-  if (0 == chdir_current || !wd[chdir_current].cwd)
+     {
+-      if (IS_ABSOLUTE_FILE_NAME (wd[chdir_current].name))
+-	{
+-	  wd[chdir_current].cwd = xstrdup (wd[chdir_current].name);
+-	  return wd[chdir_current].cwd;
+-	}
+-      if (!wd[0].cwd)
+-	wd[0].cwd = cwd;
+-
+-      for (i = chdir_current - 1; i > 0; i--)
+-	if (wd[i].cwd)
+-	  break;
+- 
+-      nbuf = namebuf_create (wd[i].cwd);
+-      for (i++; i <= chdir_current; i++)
+-	namebuf_add_dir (nbuf, wd[i].name);
+-      wd[chdir_current].cwd = namebuf_finish (nbuf);
++      static char *cwd;
++      if (!cwd)
++	cwd = xgetcwd ();
++      return cwd;
+     }
+-  return wd[chdir_current].cwd;
++  return wd[idx].cwd;
+ }
+ 
+ void
+diff --git a/src/names.c b/src/names.c
+index 8c3052f..125f0b5 100644
+--- a/src/names.c
++++ b/src/names.c
+@@ -1004,13 +1004,11 @@ collect_and_sort_names (void)
+   namelist = merge_sort (namelist, num_names, compare_names);
+ 
+   num_names = 0;
+-  nametab = hash_initialize (0, 0,
+-			     name_hash,
+-			     name_compare, NULL);
++  nametab = hash_initialize (0, 0, name_hash, name_compare, NULL);
+   for (name = namelist; name; name = next_name)
+     {
+       next_name = name->next;
+-      name->caname = normalize_filename (name->name);
++      name->caname = normalize_filename (name->change_dir, name->name);
+       if (prev_name)
+ 	{
+ 	  struct name *p = hash_lookup (nametab, name);
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 29ebab1..b05a151 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -99,6 +99,7 @@ TESTSUITE_AT = \
+  incr06.at\
+  incr07.at\
+  incr08.at\
++ incr09.at\
+  indexfile.at\
+  ignfail.at\
+  label01.at\
+diff --git a/tests/incr09.at b/tests/incr09.at
+new file mode 100644
+index 0000000..b6130a6
+--- /dev/null
++++ b/tests/incr09.at
+@@ -0,0 +1,59 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++AT_SETUP([incremental with alternating -C])
++AT_KEYWORDS([incremental create incr09])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo bar middle
++echo foo/foo_file > foo/foo_file
++echo bar/bar_file > bar/bar_file
++echo middle/file > middle/middle_file
++decho A
++tar -cvf foo.tar --incremental -C foo . -C `pwd` middle  -C bar .
++
++rm foo.tar
++>toplevel_file
++decho B
++tar -cvf foo.tar --incremental -C foo . -C `pwd` toplevel_file  -C bar .
++],
++[0],
++[A
++./
++./
++middle/
++./bar_file
++./foo_file
++middle/middle_file
++B
++./
++./
++toplevel_file
++./bar_file
++./foo_file
++],
++[A
++tar: .: Directory is new
++tar: middle: Directory is new
++tar: .: Directory is new
++B
++tar: .: Directory is new
++tar: .: Directory is new
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/testsuite.at b/tests/testsuite.at
+index d468dcf..a9f2ab6 100644
+--- a/tests/testsuite.at
++++ b/tests/testsuite.at
+@@ -260,6 +260,7 @@ m4_include([incr04.at])
+ m4_include([incr06.at])
+ m4_include([incr07.at])
+ m4_include([incr08.at])
++m4_include([incr09.at])
+ 
+ m4_include([filerem01.at])
+ m4_include([filerem02.at])
+-- 
+2.9.3
+
+
+From 779b02280a9561029d0e459275af3b3a59e521c3 Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org.ua>
+Date: Thu, 3 Oct 2013 22:41:04 +0300
+Subject: [PATCH 06/11] Tiny changes.
+
+* src/misc.c: Fix comments, rename wd.cwd to wd.abspath (Nathan Stratton
+Treadway);
+* src/tar.c (options): Reword description of the --starting-file and
+--preserve-order options.
+(decode_options): Both --starting-file and --preserve-order have meaning
+only when used together with an archive reading command. (Pavel Raiskup).
+---
+ src/misc.c | 44 +++++++++++++++++++++++++++++---------------
+ src/tar.c  |  5 +++--
+ 2 files changed, 32 insertions(+), 17 deletions(-)
+
+diff --git a/src/misc.c b/src/misc.c
+index 280f85c..201ed16 100644
+--- a/src/misc.c
++++ b/src/misc.c
+@@ -279,21 +279,23 @@ normalize_filename (int cdidx, const char *name)
+ 
+   if (IS_RELATIVE_FILE_NAME (name))
+     {
+-      /* Set COPY to the absolute file name if possible.
++      /* Set COPY to the absolute path for this name.
+ 
+          FIXME: There should be no need to get the absolute file name.
+-         getcwd is slow, it might fail, and it does not necessarily
+-         return a canonical name even when it succeeds.  Perhaps we
+-         can use dev+ino pairs instead of names?  */
+-      const char *cwd = tar_getcdpath (cdidx);
++         tar_getcdpath does not return a true "canonical" path, so
++         this following approach may lead to situations where the same
++         file or directory is processed twice under different absolute
++         paths without that duplication being detected.  Perhaps we
++         should use dev+ino pairs instead of names?  */
++      const char *cdpath = tar_getcdpath (cdidx);
+       size_t copylen;
+       bool need_separator;
+ 
+-      copylen = strlen (cwd);
++      copylen = strlen (cdpath);
+       need_separator = ! (DOUBLE_SLASH_IS_DISTINCT_ROOT
+-			  && copylen == 2 && ISSLASH (cwd[1]));
++			  && copylen == 2 && ISSLASH (cdpath[1]));
+       copy = xmalloc (copylen + need_separator + strlen (name) + 1);
+-      strcpy (copy, cwd);
++      strcpy (copy, cdpath);
+       copy[copylen] = DIRECTORY_SEPARATOR;
+       strcpy (copy + copylen + need_separator, name);
+     }
+@@ -633,8 +635,10 @@ struct wd
+ {
+   /* The directory's name.  */
+   char const *name;
+-  /* Current working directory; initialized by tar_getcwd */
+-  char *cwd;
++  /* "absolute" path representing this directory; in the contrast to
++     the real absolute pathname, it can contain /../ components (see
++     normalize_filename_x for the reason of it). */
++  char *abspath;
+   /* If nonzero, the file descriptor of the directory, or AT_FDCWD if
+      the working directory.  If zero, the directory needs to be opened
+      to be used.  */
+@@ -689,7 +693,7 @@ chdir_arg (char const *dir)
+       if (! wd_count)
+ 	{
+ 	  wd[wd_count].name = ".";
+-	  wd[wd_count].cwd = xgetcwd ();
++	  wd[wd_count].abspath = xgetcwd ();
+ 	  wd[wd_count].fd = AT_FDCWD;
+ 	  wd_count++;
+ 	}
+@@ -707,13 +711,16 @@ chdir_arg (char const *dir)
+     }
+ 
+   wd[wd_count].name = dir;
++  /* if the given name is an absolute path, then use that path
++     to represent this working directory; otherwise, construct
++     a path based on the previous -C option's absolute path */
+   if (IS_ABSOLUTE_FILE_NAME (wd[wd_count].name))
+-    wd[wd_count].cwd = xstrdup (wd[wd_count].name);
++    wd[wd_count].abspath = xstrdup (wd[wd_count].name);
+   else
+     {
+-      namebuf_t nbuf = namebuf_create (wd[wd_count - 1].cwd);
++      namebuf_t nbuf = namebuf_create (wd[wd_count - 1].abspath);
+       namebuf_add_dir (nbuf, wd[wd_count].name);
+-      wd[wd_count].cwd = namebuf_finish (nbuf);
++      wd[wd_count].abspath = namebuf_finish (nbuf);
+     }
+   wd[wd_count].fd = 0;
+   return wd_count++;
+@@ -794,6 +801,13 @@ tar_dirname (void)
+   return wd[chdir_current].name;
+ }
+ 
++/* Return the absolute path that represents the working
++   directory referenced by IDX.
++
++   If wd is empty, then there were no -C options given, and
++   chdir_args() has never been called, so we simply return the
++   process's actual cwd.  (Note that in this case IDX is ignored,
++   since it should always be 0.) */
+ const char *
+ tar_getcdpath (int idx)
+ {
+@@ -804,7 +818,7 @@ tar_getcdpath (int idx)
+ 	cwd = xgetcwd ();
+       return cwd;
+     }
+-  return wd[idx].cwd;
++  return wd[idx].abspath;
+ }
+ 
+ void
+diff --git a/src/tar.c b/src/tar.c
+index 18277e4..d11daa1 100644
+--- a/src/tar.c
++++ b/src/tar.c
+@@ -536,7 +536,8 @@ static struct argp_option options[] = {
+   {"no-same-permissions", NO_SAME_PERMISSIONS_OPTION, 0, 0,
+    N_("apply the user's umask when extracting permissions from the archive (default for ordinary users)"), GRID+1 },
+   {"preserve-order", 's', 0, 0,
+-   N_("sort names to extract to match archive"), GRID+1 },
++   N_("member arguments are listed in the same order as the "
++      "files in the archive"), GRID+1 },
+   {"same-order", 0, 0, OPTION_ALIAS, NULL, GRID+1 },
+   {"preserve", PRESERVE_OPTION, 0, 0,
+    N_("same as both -p and -s"), GRID+1 },
+@@ -730,7 +731,7 @@ static struct argp_option options[] = {
+   {"hard-dereference", HARD_DEREFERENCE_OPTION, 0, 0,
+    N_("follow hard links; archive and dump the files they refer to"), GRID+1 },
+   {"starting-file", 'K', N_("MEMBER-NAME"), 0,
+-   N_("begin at member MEMBER-NAME in the archive"), GRID+1 },
++   N_("begin at member MEMBER-NAME when reading the archive"), GRID+1 },
+   {"newer", 'N', N_("DATE-OR-FILE"), 0,
+    N_("only store files newer than DATE-OR-FILE"), GRID+1 },
+   {"after-date", 0, 0, OPTION_ALIAS, NULL, GRID+1 },
+-- 
+2.9.3
+
+
+From 79f04038e17dec01031113f4ba68f291f22012c3 Mon Sep 17 00:00:00 2001
+From: Nathan Stratton Treadway <nathanst@ontko.com>
+Date: Sat, 5 Oct 2013 08:53:08 +0300
+Subject: [PATCH 07/11] Provide comprehensive testcases for various file
+ removal modes.
+
+* tests/Makefile.am: Add new testcases.
+* tests/testsuite.at: Likewise.
+* tests/incr09.at: Add description.
+* tests/remfiles04a.at: New file.
+* tests/remfiles05.at: Rename to ...
+* tests/remfiles04b.at: ... this.
+* tests/remfiles04.at: Rename to ...
+* tests/remfiles04c.at: ... this.
+* tests/remfiles05a.at: New file.
+* tests/remfiles05b.at: New file.
+* tests/remfiles06.at: Rename to ...
+* tests/remfiles05c.at: ... this.
+* tests/remfiles06a.at: New file.
+* tests/remfiles06b.at: New file.
+* tests/remfiles06c.at: New file.
+* tests/remfiles07a.at: New file.
+* tests/remfiles07b.at: New file.
+* tests/remfiles07c.at: New file.
+* tests/remfiles08a.at: New file.
+* tests/remfiles08b.at: New file.
+* tests/remfiles08c.at: New file.
+* tests/remfiles08.at: Rename to ...
+* tests/remfiles09a.at: ... this.
+* tests/remfiles09b.at: New file.
+* tests/remfiles07.at: Rename to ...
+* tests/remfiles09c.at: ... this.
+---
+ tests/Makefile.am                       | 23 ++++++++---
+ tests/incr09.at                         |  8 ++++
+ tests/remfiles04a.at                    | 45 ++++++++++++++++++++++
+ tests/remfiles04b.at                    | 53 +++++++++++++++++++++++++
+ tests/{remfiles04.at => remfiles04c.at} | 21 +++++++---
+ tests/remfiles05a.at                    | 64 +++++++++++++++++++++++++++++++
+ tests/remfiles05b.at                    | 55 ++++++++++++++++++++++++++
+ tests/{remfiles05.at => remfiles05c.at} | 35 ++++++++++-------
+ tests/remfiles06.at                     | 65 -------------------------------
+ tests/remfiles06a.at                    | 56 +++++++++++++++++++++++++++
+ tests/remfiles06b.at                    | 56 +++++++++++++++++++++++++++
+ tests/remfiles06c.at                    | 68 +++++++++++++++++++++++++++++++++
+ tests/remfiles07a.at                    | 56 +++++++++++++++++++++++++++
+ tests/remfiles07b.at                    | 56 +++++++++++++++++++++++++++
+ tests/remfiles07c.at                    | 68 +++++++++++++++++++++++++++++++++
+ tests/remfiles08a.at                    | 56 +++++++++++++++++++++++++++
+ tests/remfiles08b.at                    | 56 +++++++++++++++++++++++++++
+ tests/remfiles08c.at                    | 68 +++++++++++++++++++++++++++++++++
+ tests/{remfiles08.at => remfiles09a.at} | 27 +++++++------
+ tests/remfiles09b.at                    | 57 +++++++++++++++++++++++++++
+ tests/{remfiles07.at => remfiles09c.at} | 37 ++++++++----------
+ tests/testsuite.at                      | 23 ++++++++---
+ 22 files changed, 923 insertions(+), 130 deletions(-)
+ create mode 100644 tests/remfiles04a.at
+ create mode 100644 tests/remfiles04b.at
+ rename tests/{remfiles04.at => remfiles04c.at} (69%)
+ create mode 100644 tests/remfiles05a.at
+ create mode 100644 tests/remfiles05b.at
+ rename tests/{remfiles05.at => remfiles05c.at} (63%)
+ create mode 100644 tests/remfiles06a.at
+ create mode 100644 tests/remfiles06b.at
+ create mode 100644 tests/remfiles06c.at
+ create mode 100644 tests/remfiles07a.at
+ create mode 100644 tests/remfiles07b.at
+ create mode 100644 tests/remfiles07c.at
+ create mode 100644 tests/remfiles08a.at
+ create mode 100644 tests/remfiles08b.at
+ create mode 100644 tests/remfiles08c.at
+ rename tests/{remfiles08.at => remfiles09a.at} (66%)
+ create mode 100644 tests/remfiles09b.at
+ rename tests/{remfiles07.at => remfiles09c.at} (68%)
+
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index b05a151..cf6f576 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -141,11 +141,24 @@ TESTSUITE_AT = \
+  remfiles01.at\
+  remfiles02.at\
+  remfiles03.at\
+- remfiles04.at\
+- remfiles05.at\
+- remfiles06.at\
+- remfiles07.at\
+- remfiles08.at\
++ remfiles04a.at\
++ remfiles04b.at\
++ remfiles04c.at\
++ remfiles05a.at\
++ remfiles05b.at\
++ remfiles05c.at\
++ remfiles06a.at\
++ remfiles06b.at\
++ remfiles06c.at\
++ remfiles07a.at\
++ remfiles07b.at\
++ remfiles07c.at\
++ remfiles08a.at\
++ remfiles08b.at\
++ remfiles08c.at\
++ remfiles09a.at\
++ remfiles09b.at\
++ remfiles09c.at\
+  same-order01.at\
+  same-order02.at\
+  shortfile.at\
+diff --git a/tests/incr09.at b/tests/incr09.at
+index b6130a6..e91fb5a 100644
+--- a/tests/incr09.at
++++ b/tests/incr09.at
+@@ -15,6 +15,14 @@
+ # You should have received a copy of the GNU General Public License
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
++# Description: For some intermediate versions of tar 1.26.90,
++# tar would fail to correctly cannonicalize archive member names
++# in incremental mode if there was a -C options with an absolute path
++# on the command line without any archive members specified within that
++# directory. (In that case, the canonical name generated for
++# members specified after later -C options wouldn't correctly reflect the
++# previous absolute path.)
++
+ AT_SETUP([incremental with alternating -C])
+ AT_KEYWORDS([incremental create incr09])
+ 
+diff --git a/tests/remfiles04a.at b/tests/remfiles04a.at
+new file mode 100644
+index 0000000..d1e4614
+--- /dev/null
++++ b/tests/remfiles04a.at
+@@ -0,0 +1,45 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of a single relative-path -C option,
++# in --create/non-incremental mode.
++#
++
++AT_SETUP([remove-files with -C:rel in -c/non-incr. mode])
++AT_KEYWORDS([create remove-files remfiles04 remfiles04a])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++echo bar > bar
++echo foobar > foo/bar
++tar -cf foo.tar --remove-files -C foo bar
++echo A
++find . | sort
++],
++[0],
++[A
++.
++./bar
++./foo
++./foo.tar
++],[],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles04b.at b/tests/remfiles04b.at
+new file mode 100644
+index 0000000..3208557
+--- /dev/null
++++ b/tests/remfiles04b.at
+@@ -0,0 +1,53 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of a single relative-path -C option,
++# in --create/incremental mode.
++#
++# (Tar 1.26 would remove files in original working directory when called in
++# this manner.  [It would follow the -C for archiving the files, but ignore it
++# for removing them afterwards.]
++#
++# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
++# References: <20130921171234.GG32256@shire.ontko.com>,
++#             http://lists.gnu.org/archive/html/bug-tar/2013-09/msg00028.html
++# )
++
++AT_SETUP([remove-files with -C:rel in -c/incr. mode])
++AT_KEYWORDS([create incremental remove-files remfiles04 remfiles04b])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++echo bar > bar
++echo foobar > foo/bar
++tar -cf foo.tar --incremental --remove-files -C foo bar
++echo A
++find . | sort
++],
++[0],
++[A
++.
++./bar
++./foo
++./foo.tar
++],[],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles04.at b/tests/remfiles04c.at
+similarity index 69%
+rename from tests/remfiles04.at
+rename to tests/remfiles04c.at
+index 04df45b..a1b6d56 100644
+--- a/tests/remfiles04.at
++++ b/tests/remfiles04c.at
+@@ -15,24 +15,32 @@
+ # You should have received a copy of the GNU General Public License
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+-# Description: Tar 1.26 would remove wrong files when called with
+-# --remove-files and -C
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of a single relative-path -C option,
++# in --append mode.
++#
++# (Tar 1.26 would remove files in original working directory when called in
++# this manner.  [It would follow the -C for archiving the files, but ignore it
++# for removing them afterwards.]
++#
+ # Reported by: Jörgen Strand <Jorgen.Strand@sonymobile.com>
+ # References: <9FC79E5CB90CEC47B9647DCAB7BD327A01AD83B452EE@seldmbx02.corpusers.net>
+ #             http://lists.gnu.org/archive/html/bug-tar/2013-09/msg00024.html
++# )
+ 
+-AT_SETUP([remove-files with -C])
+-AT_KEYWORDS([create remove-files remfiles04])
++AT_SETUP([remove-files with -C:rel in -r mode])
++AT_KEYWORDS([create append remove-files remfiles04 remfiles04c])
+ 
+ AT_TAR_CHECK([
+ AT_SORT_PREREQ
+ mkdir foo
+ echo bar > bar
+ echo foobar > foo/bar
+-tar -cf foo.tar --remove-files -C foo bar
++tar -cf foo.tar -C foo bar
+ echo A
+ find . | sort
+-echo foobar > foo/bar
+ tar -rf foo.tar --remove-files -C foo bar
+ echo B
+ find . | sort
+@@ -43,6 +51,7 @@ find . | sort
+ ./bar
+ ./foo
+ ./foo.tar
++./foo/bar
+ B
+ .
+ ./bar
+diff --git a/tests/remfiles05a.at b/tests/remfiles05a.at
+new file mode 100644
+index 0000000..4ceec37
+--- /dev/null
++++ b/tests/remfiles05a.at
+@@ -0,0 +1,64 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of two relative-path -C options,
++# in --create/non-incremental mode.
++#
++# (This specific case failed during development of tar 1.26.90:
++# There was a leftover call to chdir in name_next_elt() in
++# tar 1.26.  After commit e3d28d84 this call would confuse the 
++# tar_getcwd function.
++#
++# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
++# References: <20130924145657.GM32256@shire.ontko.com>,
++#             http://lists.gnu.org/archive/html/bug-tar/2013-09/msg00045.html
++# )
++
++AT_SETUP([remove-files with -C:rel,rel in -c/non-incr. mode])
++AT_KEYWORDS([create remove-files remfiles05 remfiles05a])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++decho A
++tar -cvf foo.tar --remove-files -C foo file -C ../bar file
++decho B
++find . | sort
++],
++[0],
++[A
++file
++file
++B
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles05b.at b/tests/remfiles05b.at
+new file mode 100644
+index 0000000..d120efd
+--- /dev/null
++++ b/tests/remfiles05b.at
+@@ -0,0 +1,55 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of two relative-path -C options,
++# in --create/incremental mode.
++#
++
++AT_SETUP([remove-files with -C:rel,rel in -c/incr. mode])
++AT_KEYWORDS([create incremental remove-files remfiles05 remfiles05b])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++decho A
++tar -cvf foo.tar --incremental --remove-files -C foo file -C ../bar file
++decho B
++find . | sort
++],
++[0],
++[A
++file
++file
++B
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles05.at b/tests/remfiles05c.at
+similarity index 63%
+rename from tests/remfiles05.at
+rename to tests/remfiles05c.at
+index 04425a7..a01b092 100644
+--- a/tests/remfiles05.at
++++ b/tests/remfiles05c.at
+@@ -15,25 +15,28 @@
+ # You should have received a copy of the GNU General Public License
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+-# Description: Tar 1.26 would remove wrong files when invoked with
+-# --listed-incremental and -C
+-# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
+-# References: <20130921171234.GG32256@shire.ontko.com>,
+-#             http://lists.gnu.org/archive/html/bug-tar/2013-09/msg00028.html
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of two relative-path -C options,
++# in --append mode.
++#
+ 
+-AT_SETUP([incremental and -C])
+-AT_KEYWORDS([incremental create remove-files remfiles05])
++AT_SETUP([remove-files with -C:rel,rel in -r mode])
++AT_KEYWORDS([create append remove-files remfiles05 remfiles05c])
+ 
+ AT_TAR_CHECK([
+ AT_SORT_PREREQ
+ mkdir foo
+-echo bar > bar
+-echo foo/bar > foo/bar
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++tar -cf foo.tar -C foo file -C ../bar file
+ decho A
+ find . | sort
+-
+ decho B
+-tar -cvf foo.tar --listed-incremental=foo.snar --remove-files -C foo bar
++tar -rvf foo.tar --remove-files -C foo file -C ../bar file
+ decho C
+ find . | sort
+ ],
+@@ -41,15 +44,19 @@ find . | sort
+ [A
+ .
+ ./bar
++./bar/file
++./file
+ ./foo
+-./foo/bar
++./foo.tar
++./foo/file
+ B
+-bar
++file
++file
+ C
+ .
+ ./bar
++./file
+ ./foo
+-./foo.snar
+ ./foo.tar
+ ],
+ [A
+diff --git a/tests/remfiles06.at b/tests/remfiles06.at
+deleted file mode 100644
+index c2d9876..8b13789
+--- a/tests/remfiles06.at
++++ /dev/null
+@@ -1,66 +0,0 @@
+-# Process this file with autom4te to create testsuite. -*- Autotest -*-
+-# Test suite for GNU tar.
+-# Copyright 2013 Free Software Foundation, Inc.
+-#
+-# GNU tar is free software; you can redistribute it and/or modify
+-# it under the terms of the GNU General Public License as published by
+-# the Free Software Foundation; either version 3 of the License, or
+-# (at your option) any later version.
+-#
+-# GNU tar is distributed in the hope that it will be useful,
+-# but WITHOUT ANY WARRANTY; without even the implied warranty of
+-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+-# GNU General Public License for more details.
+-#
+-# You should have received a copy of the GNU General Public License
+-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+-
+-# Description: There was a leftover call to chdir in name_next_elt() in
+-# tar 1.26.  After commit e3d28d84 this call would confuse the tar_getcwd
+-# function.
+-# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
+-# References: <20130924145657.GM32256@shire.ontko.com>,
+-#             http://lists.gnu.org/archive/html/bug-tar/2013-09/msg00045.html
+-
+-AT_SETUP([remove with two -C])
+-AT_KEYWORDS([remove-files remfiles06])
+-
+-AT_TAR_CHECK([
+-AT_SORT_PREREQ
+-mkdir tartest
+-cd tartest
+-mkdir foo
+-echo foo/file > foo/file
+-mkdir bar
+-echo bar/file > bar/file
+-decho A
+-find|sort
+-
+-decho B
+-tar -cvf ../foo.tar --remove-files -C foo file -C ../bar file
+-
+-decho C
+-find|sort
+-],
+-[0],
+-[A
+-.
+-./bar
+-./bar/file
+-./foo
+-./foo/file
+-B
+-file
+-file
+-C
+-.
+-./bar
+-./foo
+-],
+-[A
+-B
+-C
+-],[],[],[gnu])
+-
+-AT_CLEANUP
+-
+diff --git a/tests/remfiles06a.at b/tests/remfiles06a.at
+new file mode 100644
+index 0000000..fe762c1
+--- /dev/null
++++ b/tests/remfiles06a.at
+@@ -0,0 +1,56 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of a relative -C option followed by an absolute -C,
++# in --create/non-incremental mode.
++#
++
++AT_SETUP([remove-files with -C:rel,abs in -c/non-incr. mode])
++AT_KEYWORDS([create remove-files remfiles06 remfiles06a])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++DIR=`pwd`
++decho A
++tar -cvf foo.tar --remove-files -C foo file -C $DIR/bar file
++decho B
++find . | sort
++],
++[0],
++[A
++file
++file
++B
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles06b.at b/tests/remfiles06b.at
+new file mode 100644
+index 0000000..3b867fb
+--- /dev/null
++++ b/tests/remfiles06b.at
+@@ -0,0 +1,56 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of a relative -C option followed by an absolute -C,
++# in --create/incremental mode.
++#
++
++AT_SETUP([remove-files with -C:rel,abs in -c/incr. mode])
++AT_KEYWORDS([create incremental remove-files remfiles06 remfiles06b])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++DIR=`pwd`
++decho A
++tar -cvf foo.tar --incremental --remove-files -C foo file -C $DIR/bar file
++decho B
++find . | sort
++],
++[0],
++[A
++file
++file
++B
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles06c.at b/tests/remfiles06c.at
+new file mode 100644
+index 0000000..ad9164d
+--- /dev/null
++++ b/tests/remfiles06c.at
+@@ -0,0 +1,68 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of a relative -C option followed by an absolute -C,
++# in --append mode.
++#
++
++AT_SETUP([remove-files with -C:rel,abs in -r mode])
++AT_KEYWORDS([create append remove-files remfiles06 remfiles06c])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++DIR=`pwd`
++tar -cf foo.tar -C foo file -C $DIR/bar file
++decho A
++find . | sort
++decho B
++tar -rvf foo.tar --remove-files -C foo file -C ../bar file
++decho C
++find . | sort
++],
++[0],
++[A
++.
++./bar
++./bar/file
++./file
++./foo
++./foo.tar
++./foo/file
++B
++file
++file
++C
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++C
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles07a.at b/tests/remfiles07a.at
+new file mode 100644
+index 0000000..95f645c
+--- /dev/null
++++ b/tests/remfiles07a.at
+@@ -0,0 +1,56 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of a relative -C option followed by an absolute -C,
++# in --create/non-incremental mode.
++#
++
++AT_SETUP([remove-files with -C:rel,abs in -c/non-incr. mode])
++AT_KEYWORDS([create remove-files remfiles07 remfiles07a])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++DIR=`pwd`
++decho A
++tar -cvf foo.tar --remove-files -C foo file -C $DIR/bar file
++decho B
++find . | sort
++],
++[0],
++[A
++file
++file
++B
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles07b.at b/tests/remfiles07b.at
+new file mode 100644
+index 0000000..ca67e5d
+--- /dev/null
++++ b/tests/remfiles07b.at
+@@ -0,0 +1,56 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of a relative -C option followed by an absolute -C,
++# in --create/incremental mode.
++#
++
++AT_SETUP([remove-files with -C:rel,abs in -c/incr. mode])
++AT_KEYWORDS([create incremental remove-files remfiles07 remfiles07b])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++DIR=`pwd`
++decho A
++tar -cvf foo.tar --incremental --remove-files -C foo file -C $DIR/bar file
++decho B
++find . | sort
++],
++[0],
++[A
++file
++file
++B
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles07c.at b/tests/remfiles07c.at
+new file mode 100644
+index 0000000..6a5c870
+--- /dev/null
++++ b/tests/remfiles07c.at
+@@ -0,0 +1,68 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of a relative -C option followed by an absolute -C,
++# in --append mode.
++#
++
++AT_SETUP([remove-files with -C:rel,abs in -r mode])
++AT_KEYWORDS([create append remove-files remfiles07 remfiles07c])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++DIR=`pwd`
++tar -cf foo.tar -C foo file -C $DIR/bar file
++decho A
++find . | sort
++decho B
++tar -rvf foo.tar --remove-files -C foo file -C $DIR/bar file
++decho C
++find . | sort
++],
++[0],
++[A
++.
++./bar
++./bar/file
++./file
++./foo
++./foo.tar
++./foo/file
++B
++file
++file
++C
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++C
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles08a.at b/tests/remfiles08a.at
+new file mode 100644
+index 0000000..eadf149
+--- /dev/null
++++ b/tests/remfiles08a.at
+@@ -0,0 +1,56 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of an absolute -C option followed by a relative -C,
++# in --create/non-incremental mode.
++#
++
++AT_SETUP([remove-files with -C:abs,rel in -c/non-incr. mode])
++AT_KEYWORDS([create remove-files remfiles08 remfiles08a])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++DIR=`pwd`
++decho A
++tar -cvf foo.tar --remove-files -C $DIR/foo file -C ../bar file
++decho B
++find . | sort
++],
++[0],
++[A
++file
++file
++B
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles08b.at b/tests/remfiles08b.at
+new file mode 100644
+index 0000000..9faf2bb
+--- /dev/null
++++ b/tests/remfiles08b.at
+@@ -0,0 +1,56 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of an absolute -C option followed by a relative -C,
++# in --create/incremental mode.
++#
++
++AT_SETUP([remove-files with -C:abs,rel in -c/incr. mode])
++AT_KEYWORDS([create incremental remove-files remfiles08 remfiles08b])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++DIR=`pwd`
++decho A
++tar -cvf foo.tar --incremental --remove-files -C $DIR/foo file -C ../bar file
++decho B
++find . | sort
++],
++[0],
++[A
++file
++file
++B
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles08c.at b/tests/remfiles08c.at
+new file mode 100644
+index 0000000..a220f4c
+--- /dev/null
++++ b/tests/remfiles08c.at
+@@ -0,0 +1,68 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: ensure tar correctly respects -C option when deleting
++# files due to the --remove-files option.
++#
++# This case checks the use of an absolute -C option followed by a relative -C,
++# in --append mode.
++#
++
++AT_SETUP([remove-files with -C:abs,rel in -r mode])
++AT_KEYWORDS([create append remove-files remfiles08 remfiles08c])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++mkdir bar
++echo file > file
++echo foo/file > foo/file
++echo bar/file > bar/file
++DIR=`pwd`
++tar -cf foo.tar -C $DIR/foo file -C ../bar file
++decho A
++find . | sort
++decho B
++tar -rvf foo.tar --remove-files -C $DIR/foo file -C ../bar file
++decho C
++find . | sort
++],
++[0],
++[A
++.
++./bar
++./bar/file
++./file
++./foo
++./foo.tar
++./foo/file
++B
++file
++file
++C
++.
++./bar
++./file
++./foo
++./foo.tar
++],
++[A
++B
++C
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles08.at b/tests/remfiles09a.at
+similarity index 66%
+rename from tests/remfiles08.at
+rename to tests/remfiles09a.at
+index 0649e85..fd28b4f 100644
+--- a/tests/remfiles08.at
++++ b/tests/remfiles09a.at
+@@ -15,29 +15,28 @@
+ # You should have received a copy of the GNU General Public License
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+-# Description: See remfiles06.at
+-# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
+-# References: <20130926050634.GW32256@shire.ontko.com>
++# Description: check --remove-files operation when archiving/deleting
++# directory trees.
++#
++# This case checks the operation
++# in --create/non-incremental mode.
++#
+ 
+-AT_SETUP([remove with -C to absolute and relative paths])
+-AT_KEYWORDS([incremental create remove-files remfiles08])
++AT_SETUP([remove-files on full directory in -c/non-incr. mode])
++AT_KEYWORDS([create remove-files remfiles09 remfiles09a])
+ 
+ AT_TAR_CHECK([
+ mkdir foo
+-mkdir bar
+-echo foo/foo_file > foo/foo_file
+-echo bar/bar_file > bar/bar_file
++echo foo/file > foo/file
+ decho A
+-tar -cvf foo.tar --remove-files -C `pwd`/foo . -C ../bar .
++tar -cvf foo.tar --remove-files foo
+ decho B
+-find
++find . 
+ ],
+ [0],
+ [A
+-./
+-./foo_file
+-./
+-./bar_file
++foo/
++foo/file
+ B
+ .
+ ./foo.tar
+diff --git a/tests/remfiles09b.at b/tests/remfiles09b.at
+new file mode 100644
+index 0000000..30cc3ee
+--- /dev/null
++++ b/tests/remfiles09b.at
+@@ -0,0 +1,57 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2013 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Description: check --remove-files operation when archiving/deleting
++# directory trees.
++#
++# This case checks the operation
++# in --create/incremental mode.
++#
++# Note: in tar 1.27, when run in incremental mode tar will attempt to remove
++# the directory before removing the files within that directory, and thus
++# the --remove-files operation will cause tar to abort with an error status.
++# This issue will be fixed in a later version of tar.
++
++AT_SETUP([remove-files on full directory in -c/incr. mode])
++AT_KEYWORDS([create incremental remove-files remfiles09 remfiles09b])
++
++AT_TAR_CHECK([
++AT_SORT_PREREQ
++mkdir foo
++echo foo/file > foo/file
++decho A
++tar -cvf foo.tar --incremental --remove-files foo
++TARSTAT=$?
++decho B
++find .
++test $TARSTAT -ne 0 && AT_SKIP_TEST   # we expect to fail in tar 1.27
++],
++[0],
++[A
++foo/
++foo/file
++B
++.
++./foo
++./foo.tar
++],
++[A
++tar: foo: Directory is new
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/remfiles07.at b/tests/remfiles09c.at
+similarity index 68%
+rename from tests/remfiles07.at
+rename to tests/remfiles09c.at
+index 742e0a1..7241608 100644
+--- a/tests/remfiles07.at
++++ b/tests/remfiles09c.at
+@@ -15,45 +15,40 @@
+ # You should have received a copy of the GNU General Public License
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+-# Description: See remfiles06.at
+-# Reported by: Nathan Stratton Treadway <nathanst@ontko.com>
+-# References: <20130924185129.GO32256@shire.ontko.com>
++# Description: check --remove-files operation when archiving/deleting
++# directory trees.
++#
++# This case checks the operation
++# in --append mode.
++#
+ 
+-AT_SETUP([remove with -C to absolute path])
+-AT_KEYWORDS([create remove-files remfiles07])
++AT_SETUP([remove-files on full directory in -r mode])
++AT_KEYWORDS([create append remove-files remfiles09 remfiles09c])
+ 
+ AT_TAR_CHECK([
+ AT_SORT_PREREQ
+-mkdir tartest
+-cd tartest
+ mkdir foo
+ echo foo/file > foo/file
+-mkdir bar
+-echo bar/file > bar/file
++tar -cf foo.tar foo
+ decho A
+-find|sort
+-
+-DIR=`pwd`
++find . | sort
+ decho B
+-tar -cvf ../foo.tar --remove-files -C foo file -C $DIR/bar file
+-
++tar -rvf foo.tar --remove-files foo
+ decho C
+-find|sort
++find . | sort
+ ],
+ [0],
+ [A
+ .
+-./bar
+-./bar/file
+ ./foo
++./foo.tar
+ ./foo/file
+ B
+-file
+-file
++foo/
++foo/file
+ C
+ .
+-./bar
+-./foo
++./foo.tar
+ ],
+ [A
+ B
+diff --git a/tests/testsuite.at b/tests/testsuite.at
+index a9f2ab6..1cc425f 100644
+--- a/tests/testsuite.at
++++ b/tests/testsuite.at
+@@ -332,11 +332,24 @@ m4_include([grow.at])
+ m4_include([remfiles01.at])
+ m4_include([remfiles02.at])
+ m4_include([remfiles03.at])
+-m4_include([remfiles04.at])
+-m4_include([remfiles05.at])
+-m4_include([remfiles06.at])
+-m4_include([remfiles07.at])
+-m4_include([remfiles08.at])
++m4_include([remfiles04a.at])
++m4_include([remfiles04b.at])
++m4_include([remfiles04c.at])
++m4_include([remfiles05a.at])
++m4_include([remfiles05b.at])
++m4_include([remfiles05c.at])
++m4_include([remfiles06a.at])
++m4_include([remfiles06b.at])
++m4_include([remfiles06c.at])
++m4_include([remfiles07a.at])
++m4_include([remfiles07b.at])
++m4_include([remfiles07c.at])
++m4_include([remfiles08a.at])
++m4_include([remfiles08b.at])
++m4_include([remfiles08c.at])
++m4_include([remfiles09a.at])
++m4_include([remfiles09b.at])
++m4_include([remfiles09c.at])
+ 
+ m4_include([sigpipe.at])
+ 
+-- 
+2.9.3
+
+
+From c3d32c9c848f1f305cd9aefd9f485cdfbcee51b2 Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org.ua>
+Date: Sat, 5 Oct 2013 09:29:55 +0300
+Subject: [PATCH 08/11] Xfail the remfiles09b test.
+
+* tests/remfiles09b.at: Turn into expected failure.
+---
+ tests/remfiles09b.at | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tests/remfiles09b.at b/tests/remfiles09b.at
+index 30cc3ee..de9b172 100644
+--- a/tests/remfiles09b.at
++++ b/tests/remfiles09b.at
+@@ -29,6 +29,8 @@
+ AT_SETUP([remove-files on full directory in -c/incr. mode])
+ AT_KEYWORDS([create incremental remove-files remfiles09 remfiles09b])
+ 
++AT_XFAIL_IF(true) # we expect to fail in tar 1.27
++
+ AT_TAR_CHECK([
+ AT_SORT_PREREQ
+ mkdir foo
+@@ -38,7 +40,6 @@ tar -cvf foo.tar --incremental --remove-files foo
+ TARSTAT=$?
+ decho B
+ find .
+-test $TARSTAT -ne 0 && AT_SKIP_TEST   # we expect to fail in tar 1.27
+ ],
+ [0],
+ [A
+-- 
+2.9.3
+
+
+From 2c5449cc473b0a9affed02feaf3ad42e5e89bfb5 Mon Sep 17 00:00:00 2001
+From: Paul Eggert <eggert@cs.ucla.edu>
+Date: Tue, 29 Apr 2014 14:22:07 -0700
+Subject: [PATCH 09/11] tar: do not dereference NULL pointer with
+ '--remove-files .'
+
+Problem reported by Thorsten Hirsch in:
+http://lists.gnu.org/archive/html/bug-tar/2014-04/msg00011.html
+* src/unlink.c (flush_deferred_unlinks):
+Do not attempt to find the parent of "." when "." is
+at the top level.
+* tests/remfiles10.at: New file.
+* tests/Makefile.am (TESTSUITE_AT):
+* tests/testsuite.at: Add it.
+---
+ src/unlink.c        |  5 +++--
+ tests/Makefile.am   |  1 +
+ tests/remfiles10.at | 46 ++++++++++++++++++++++++++++++++++++++++++++++
+ tests/testsuite.at  |  1 +
+ 4 files changed, 51 insertions(+), 2 deletions(-)
+ create mode 100644 tests/remfiles10.at
+
+diff --git a/src/unlink.c b/src/unlink.c
+index 10e0b41..6e41acc 100644
+--- a/src/unlink.c
++++ b/src/unlink.c
+@@ -84,8 +84,9 @@ flush_deferred_unlinks (bool force)
+ 	    {
+ 	      const char *fname;
+ 
+-	      if (p->file_name[0] == 0 ||
+-		  strcmp (p->file_name, ".") == 0)
++	      if (p->dir_idx
++		  && (p->file_name[0] == 0
++		      || strcmp (p->file_name, ".") == 0))
+ 		{
+ 		  fname = tar_dirname ();
+ 		  chdir_do (p->dir_idx - 1);
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index cf6f576..792c83c 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -159,6 +159,7 @@ TESTSUITE_AT = \
+  remfiles09a.at\
+  remfiles09b.at\
+  remfiles09c.at\
++ remfiles10.at\
+  same-order01.at\
+  same-order02.at\
+  shortfile.at\
+diff --git a/tests/remfiles10.at b/tests/remfiles10.at
+new file mode 100644
+index 0000000..b4fe139
+--- /dev/null
++++ b/tests/remfiles10.at
+@@ -0,0 +1,46 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++# Test suite for GNU tar.
++# Copyright 2014 Free Software Foundation, Inc.
++#
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++# Check --remove-files with .
++
++AT_SETUP([remove-files])
++AT_KEYWORDS([create remove-files remfiles10])
++
++AT_TAR_CHECK([
++mkdir foo
++echo foo/file > foo/file
++decho A
++(cd foo && tar -cvf ../foo.tar --remove-files .)
++tar_status=$?
++decho B
++find foo
++exit $tar_status
++],
++[2],
++[A
++./
++./file
++B
++foo
++],
++[A
++tar: .: Cannot rmdir: Invalid argument
++tar: Exiting with failure status due to previous errors
++B
++],[],[],[gnu])
++
++AT_CLEANUP
+diff --git a/tests/testsuite.at b/tests/testsuite.at
+index 1cc425f..1078724 100644
+--- a/tests/testsuite.at
++++ b/tests/testsuite.at
+@@ -350,6 +350,7 @@ m4_include([remfiles08c.at])
+ m4_include([remfiles09a.at])
+ m4_include([remfiles09b.at])
+ m4_include([remfiles09c.at])
++m4_include([remfiles10.at])
+ 
+ m4_include([sigpipe.at])
+ 
+-- 
+2.9.3
+
+
+From 612e134f4905f479b78b6d7faf9798494697a742 Mon Sep 17 00:00:00 2001
+From: Nathan Stratton Treadway <nathanst@ontko.com>
+Date: Sun, 27 Jul 2014 23:27:28 +0300
+Subject: [PATCH 10/11] Restructure the remfiles testsuite.
+
+---
+ tests/remfiles06c.at |  2 +-
+ tests/remfiles07a.at |  6 +++---
+ tests/remfiles07b.at |  6 +++---
+ tests/remfiles07c.at |  8 ++++----
+ tests/remfiles08a.at | 31 +++++++++++++++----------------
+ tests/remfiles08b.at | 38 ++++++++++++++++++++++----------------
+ tests/remfiles08c.at | 37 ++++++++++++++++++-------------------
+ tests/remfiles09a.at |  2 +-
+ tests/remfiles09b.at |  3 ---
+ 9 files changed, 67 insertions(+), 66 deletions(-)
+
+diff --git a/tests/remfiles06c.at b/tests/remfiles06c.at
+index ad9164d..abb8e68 100644
+--- a/tests/remfiles06c.at
++++ b/tests/remfiles06c.at
+@@ -37,7 +37,7 @@ tar -cf foo.tar -C foo file -C $DIR/bar file
+ decho A
+ find . | sort
+ decho B
+-tar -rvf foo.tar --remove-files -C foo file -C ../bar file
++tar -rvf foo.tar --remove-files -C foo file -C $DIR/bar file
+ decho C
+ find . | sort
+ ],
+diff --git a/tests/remfiles07a.at b/tests/remfiles07a.at
+index 95f645c..5b7df3e 100644
+--- a/tests/remfiles07a.at
++++ b/tests/remfiles07a.at
+@@ -18,11 +18,11 @@
+ # Description: ensure tar correctly respects -C option when deleting
+ # files due to the --remove-files option.
+ #
+-# This case checks the use of a relative -C option followed by an absolute -C,
++# This case checks the use of an absolute -C option followed by a relative -C,
+ # in --create/non-incremental mode.
+ #
+ 
+-AT_SETUP([remove-files with -C:rel,abs in -c/non-incr. mode])
++AT_SETUP([remove-files with -C:abs,rel in -c/non-incr. mode])
+ AT_KEYWORDS([create remove-files remfiles07 remfiles07a])
+ 
+ AT_TAR_CHECK([
+@@ -34,7 +34,7 @@ echo foo/file > foo/file
+ echo bar/file > bar/file
+ DIR=`pwd`
+ decho A
+-tar -cvf foo.tar --remove-files -C foo file -C $DIR/bar file
++tar -cvf foo.tar --remove-files -C $DIR/foo file -C ../bar file
+ decho B
+ find . | sort
+ ],
+diff --git a/tests/remfiles07b.at b/tests/remfiles07b.at
+index ca67e5d..0147c5d 100644
+--- a/tests/remfiles07b.at
++++ b/tests/remfiles07b.at
+@@ -18,11 +18,11 @@
+ # Description: ensure tar correctly respects -C option when deleting
+ # files due to the --remove-files option.
+ #
+-# This case checks the use of a relative -C option followed by an absolute -C,
++# This case checks the use of an absolute -C option followed by a relative -C,
+ # in --create/incremental mode.
+ #
+ 
+-AT_SETUP([remove-files with -C:rel,abs in -c/incr. mode])
++AT_SETUP([remove-files with -C:abs,rel in -c/incr. mode])
+ AT_KEYWORDS([create incremental remove-files remfiles07 remfiles07b])
+ 
+ AT_TAR_CHECK([
+@@ -34,7 +34,7 @@ echo foo/file > foo/file
+ echo bar/file > bar/file
+ DIR=`pwd`
+ decho A
+-tar -cvf foo.tar --incremental --remove-files -C foo file -C $DIR/bar file
++tar -cvf foo.tar --incremental --remove-files -C $DIR/foo file -C ../bar file
+ decho B
+ find . | sort
+ ],
+diff --git a/tests/remfiles07c.at b/tests/remfiles07c.at
+index 6a5c870..f190539 100644
+--- a/tests/remfiles07c.at
++++ b/tests/remfiles07c.at
+@@ -18,11 +18,11 @@
+ # Description: ensure tar correctly respects -C option when deleting
+ # files due to the --remove-files option.
+ #
+-# This case checks the use of a relative -C option followed by an absolute -C,
++# This case checks the use of an absolute -C option followed by a relative -C,
+ # in --append mode.
+ #
+ 
+-AT_SETUP([remove-files with -C:rel,abs in -r mode])
++AT_SETUP([remove-files with -C:abs,rel in -r mode])
+ AT_KEYWORDS([create append remove-files remfiles07 remfiles07c])
+ 
+ AT_TAR_CHECK([
+@@ -33,11 +33,11 @@ echo file > file
+ echo foo/file > foo/file
+ echo bar/file > bar/file
+ DIR=`pwd`
+-tar -cf foo.tar -C foo file -C $DIR/bar file
++tar -cf foo.tar -C $DIR/foo file -C ../bar file
+ decho A
+ find . | sort
+ decho B
+-tar -rvf foo.tar --remove-files -C foo file -C $DIR/bar file
++tar -rvf foo.tar --remove-files -C $DIR/foo file -C ../bar file
+ decho C
+ find . | sort
+ ],
+diff --git a/tests/remfiles08a.at b/tests/remfiles08a.at
+index eadf149..1ffffb2 100644
+--- a/tests/remfiles08a.at
++++ b/tests/remfiles08a.at
+@@ -15,38 +15,37 @@
+ # You should have received a copy of the GNU General Public License
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+-# Description: ensure tar correctly respects -C option when deleting
+-# files due to the --remove-files option.
++# Description: If tar 1.26 was called with the --remove-files option and told
++# to archive (and thus delete) two subdirectories where the second was
++# specified relative to the first, it would be unable to delete the
++# second directory (and its contents), since the relative path would no
++# longer be valid once the first directory was deleted.
+ #
+-# This case checks the use of an absolute -C option followed by a relative -C,
++# This case checks for successful deletion of all archived items
+ # in --create/non-incremental mode.
+ #
+ 
+-AT_SETUP([remove-files with -C:abs,rel in -c/non-incr. mode])
++AT_SETUP([remove-files deleting two subdirs in -c/non-incr. mode])
+ AT_KEYWORDS([create remove-files remfiles08 remfiles08a])
+ 
+ AT_TAR_CHECK([
+-AT_SORT_PREREQ
+ mkdir foo
+ mkdir bar
+-echo file > file
+-echo foo/file > foo/file
+-echo bar/file > bar/file
+-DIR=`pwd`
++echo foo/foo_file > foo/foo_file
++echo bar/bar_file > bar/bar_file
+ decho A
+-tar -cvf foo.tar --remove-files -C $DIR/foo file -C ../bar file
++tar -cvf foo.tar --remove-files -C foo . -C ../bar .
+ decho B
+-find . | sort
++find .
+ ],
+ [0],
+ [A
+-file
+-file
++./
++./foo_file
++./
++./bar_file
+ B
+ .
+-./bar
+-./file
+-./foo
+ ./foo.tar
+ ],
+ [A
+diff --git a/tests/remfiles08b.at b/tests/remfiles08b.at
+index 9faf2bb..d61c9ab 100644
+--- a/tests/remfiles08b.at
++++ b/tests/remfiles08b.at
+@@ -15,41 +15,47 @@
+ # You should have received a copy of the GNU General Public License
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+-# Description: ensure tar correctly respects -C option when deleting
+-# files due to the --remove-files option.
++# Description: If tar 1.26 was called with the --remove-files option and told
++# to archive (and thus delete) two subdirectories where the second was
++# specified relative to the first, it would be unable to delete the
++# second directory (and its contents), since the relative path would no
++# longer be valid once the first directory was deleted.
+ #
+-# This case checks the use of an absolute -C option followed by a relative -C,
++# This case checks for successful deletion of all archived items
+ # in --create/incremental mode.
+ #
++# Note: tar 1.27 fails this test case due to a more general issue
++# archving-and-removing a full directory tree when run in incremental
++# mode; see remfiles09b.at for that specific test case.
+ 
+-AT_SETUP([remove-files with -C:abs,rel in -c/incr. mode])
++AT_SETUP([remove-files deleting two subdirs in -c/incr. mode])
+ AT_KEYWORDS([create incremental remove-files remfiles08 remfiles08b])
+ 
++AT_XFAIL_IF(true) # we expect to fail in tar 1.27
++
+ AT_TAR_CHECK([
+-AT_SORT_PREREQ
+ mkdir foo
+ mkdir bar
+-echo file > file
+-echo foo/file > foo/file
+-echo bar/file > bar/file
+-DIR=`pwd`
++echo foo/foo_file > foo/foo_file
++echo bar/bar_file > bar/bar_file
+ decho A
+-tar -cvf foo.tar --incremental --remove-files -C $DIR/foo file -C ../bar file
++tar -cvf foo.tar --incremental --remove-files -C foo . -C ../bar .
+ decho B
+-find . | sort
++find .
+ ],
+ [0],
+ [A
+-file
+-file
++./
++./
++./foo_file
++./bar_file
+ B
+ .
+-./bar
+-./file
+-./foo
+ ./foo.tar
+ ],
+ [A
++tar: .: Directory is new
++tar: .: Directory is new
+ B
+ ],[],[],[gnu])
+ 
+diff --git a/tests/remfiles08c.at b/tests/remfiles08c.at
+index a220f4c..19b18e2 100644
+--- a/tests/remfiles08c.at
++++ b/tests/remfiles08c.at
+@@ -15,49 +15,48 @@
+ # You should have received a copy of the GNU General Public License
+ # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ 
+-# Description: ensure tar correctly respects -C option when deleting
+-# files due to the --remove-files option.
++# Description: If tar 1.26 was called with the --remove-files option and told
++# to archive (and thus delete) two subdirectories where the second was
++# specified relative to the first, it would be unable to delete the
++# second directory (and its contents), since the relative path would no
++# longer be valid once the first directory was deleted.
+ #
+-# This case checks the use of an absolute -C option followed by a relative -C,
++# This case checks for successful deletion of all archived items
+ # in --append mode.
+ #
+ 
+-AT_SETUP([remove-files with -C:abs,rel in -r mode])
++AT_SETUP([remove-files deleting two subdirs in -r mode])
+ AT_KEYWORDS([create append remove-files remfiles08 remfiles08c])
+ 
+ AT_TAR_CHECK([
+ AT_SORT_PREREQ
+ mkdir foo
+ mkdir bar
+-echo file > file
+-echo foo/file > foo/file
+-echo bar/file > bar/file
+-DIR=`pwd`
+-tar -cf foo.tar -C $DIR/foo file -C ../bar file
++echo foo/foo_file > foo/foo_file
++echo bar/bar_file > bar/bar_file
++tar -cf foo.tar -C foo . -C ../bar .
+ decho A
+ find . | sort
+ decho B
+-tar -rvf foo.tar --remove-files -C $DIR/foo file -C ../bar file
++tar -rvf foo.tar --remove-files -C foo . -C ../bar .
+ decho C
+-find . | sort
++find .
+ ],
+ [0],
+ [A
+ .
+ ./bar
+-./bar/file
+-./file
++./bar/bar_file
+ ./foo
+ ./foo.tar
+-./foo/file
++./foo/foo_file
+ B
+-file
+-file
++./
++./foo_file
++./
++./bar_file
+ C
+ .
+-./bar
+-./file
+-./foo
+ ./foo.tar
+ ],
+ [A
+diff --git a/tests/remfiles09a.at b/tests/remfiles09a.at
+index fd28b4f..f4a3bf5 100644
+--- a/tests/remfiles09a.at
++++ b/tests/remfiles09a.at
+@@ -31,7 +31,7 @@ echo foo/file > foo/file
+ decho A
+ tar -cvf foo.tar --remove-files foo
+ decho B
+-find . 
++find .
+ ],
+ [0],
+ [A
+diff --git a/tests/remfiles09b.at b/tests/remfiles09b.at
+index de9b172..e12fe32 100644
+--- a/tests/remfiles09b.at
++++ b/tests/remfiles09b.at
+@@ -32,12 +32,10 @@ AT_KEYWORDS([create incremental remove-files remfiles09 remfiles09b])
+ AT_XFAIL_IF(true) # we expect to fail in tar 1.27
+ 
+ AT_TAR_CHECK([
+-AT_SORT_PREREQ
+ mkdir foo
+ echo foo/file > foo/file
+ decho A
+ tar -cvf foo.tar --incremental --remove-files foo
+-TARSTAT=$?
+ decho B
+ find .
+ ],
+@@ -47,7 +45,6 @@ foo/
+ foo/file
+ B
+ .
+-./foo
+ ./foo.tar
+ ],
+ [A
+-- 
+2.9.3
+
+
+From 6030b8a2589ff69d9200578e0aecc1f10aedb073 Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org>
+Date: Wed, 11 Nov 2015 13:01:45 +0200
+Subject: [PATCH 11/11] Work around unlinkat bug on FreeBSD and GNU/Hurd
+
+* src/unlink.c (dunlink_insert): New function.
+(flush_deferred_unlinks): Skip cwds and nonempty directories
+at the first pass.  If force is requested, run a second pass
+removing them.
+(queue_deferred_unlink): Make sure current working directory
+entries are sorted in descending order by the value of dir_idx.
+This makes sure they will be removed in right order, which works
+around unlinkat bug on FreeBSD and GNU/Hurd.
+* tests/remfiles08b.at: Remove expected failure.
+* tests/remfiles09b.at: Likewise.
+---
+ src/unlink.c         | 91 +++++++++++++++++++++++++++++++++++++++++-----------
+ tests/remfiles08b.at |  2 --
+ tests/remfiles09b.at |  2 --
+ 3 files changed, 72 insertions(+), 23 deletions(-)
+
+diff --git a/src/unlink.c b/src/unlink.c
+index 6e41acc..f5fb81d 100644
+--- a/src/unlink.c
++++ b/src/unlink.c
+@@ -30,6 +30,10 @@ struct deferred_unlink
+ 				       entry got added to the queue */
+   };
+ 
++#define IS_CWD(p) \
++  ((p)->is_dir \
++   && ((p)->file_name[0] == 0 || strcmp ((p)->file_name, ".") == 0))
++
+ /* The unlink queue */
+ static struct deferred_unlink *dunlink_head, *dunlink_tail;
+ 
+@@ -59,6 +63,24 @@ dunlink_alloc (void)
+ }
+ 
+ static void
++dunlink_insert (struct deferred_unlink *anchor, struct deferred_unlink *p)
++{
++  if (anchor)
++    {
++      p->next = anchor->next;
++      anchor->next = p;
++    }
++  else
++    {
++      p->next = dunlink_head;
++      dunlink_head = p;
++    }
++  if (!p->next)
++    dunlink_tail = p;
++  dunlink_count++;
++}
++
++static void
+ dunlink_reclaim (struct deferred_unlink *p)
+ {
+   free (p->file_name);
+@@ -84,12 +106,11 @@ flush_deferred_unlinks (bool force)
+ 	    {
+ 	      const char *fname;
+ 
+-	      if (p->dir_idx
+-		  && (p->file_name[0] == 0
+-		      || strcmp (p->file_name, ".") == 0))
++	      if (p->dir_idx && IS_CWD (p))
+ 		{
+-		  fname = tar_dirname ();
+-		  chdir_do (p->dir_idx - 1);
++		  prev = p;
++		  p = next;
++		  continue;
+ 		}
+ 	      else
+ 		fname = p->file_name;
+@@ -102,15 +123,12 @@ flush_deferred_unlinks (bool force)
+ 		      /* nothing to worry about */
+ 		      break;
+ 		    case ENOTEMPTY:
+-		      if (!force)
+-			{
+-			  /* Keep the record in list, in the hope we'll
+-			     be able to remove it later */
+-			  prev = p;
+-			  p = next;
+-			  continue;
+-			}
+-		      /* fall through */
++		      /* Keep the record in list, in the hope we'll
++			 be able to remove it later */
++		      prev = p;
++		      p = next;
++		      continue;
++
+ 		    default:
+ 		      rmdir_error (fname);
+ 		    }
+@@ -137,6 +155,34 @@ flush_deferred_unlinks (bool force)
+     }
+   if (!dunlink_head)
+     dunlink_tail = NULL;
++  else if (force)
++    {
++      for (p = dunlink_head; p; )
++	{
++	  struct deferred_unlink *next = p->next;
++	  const char *fname;
++
++	  chdir_do (p->dir_idx);
++	  if (p->dir_idx && IS_CWD (p))
++	    {
++	      fname = tar_dirname ();
++	      chdir_do (p->dir_idx - 1);
++	    }
++	  else
++	    fname = p->file_name;
++
++	  if (unlinkat (chdir_fd, fname, AT_REMOVEDIR) != 0)
++	    {
++	      if (errno != ENOENT)
++		rmdir_error (fname);
++	    }
++	  dunlink_reclaim (p);
++	  dunlink_count--;
++	  p = next;
++	}
++      dunlink_head = dunlink_tail = NULL;
++    }
++
+   chdir_do (saved_chdir);
+ }
+ 
+@@ -169,10 +215,17 @@ queue_deferred_unlink (const char *name, bool is_dir)
+   p->is_dir = is_dir;
+   p->records_written = records_written;
+ 
+-  if (dunlink_tail)
+-    dunlink_tail->next = p;
++  if (IS_CWD (p))
++    {
++      struct deferred_unlink *q, *prev;
++      for (q = dunlink_head, prev = NULL; q; prev = q, q = q->next)
++	if (IS_CWD (q) && q->dir_idx < p->dir_idx)
++	  break;
++      if (q)
++	dunlink_insert (prev, p);
++      else
++	dunlink_insert (dunlink_tail, p);
++    }
+   else
+-    dunlink_head = p;
+-  dunlink_tail = p;
+-  dunlink_count++;
++    dunlink_insert (dunlink_tail, p);
+ }
+diff --git a/tests/remfiles08b.at b/tests/remfiles08b.at
+index d61c9ab..4487f83 100644
+--- a/tests/remfiles08b.at
++++ b/tests/remfiles08b.at
+@@ -31,8 +31,6 @@
+ AT_SETUP([remove-files deleting two subdirs in -c/incr. mode])
+ AT_KEYWORDS([create incremental remove-files remfiles08 remfiles08b])
+ 
+-AT_XFAIL_IF(true) # we expect to fail in tar 1.27
+-
+ AT_TAR_CHECK([
+ mkdir foo
+ mkdir bar
+diff --git a/tests/remfiles09b.at b/tests/remfiles09b.at
+index e12fe32..4d05aa5 100644
+--- a/tests/remfiles09b.at
++++ b/tests/remfiles09b.at
+@@ -29,8 +29,6 @@
+ AT_SETUP([remove-files on full directory in -c/incr. mode])
+ AT_KEYWORDS([create incremental remove-files remfiles09 remfiles09b])
+ 
+-AT_XFAIL_IF(true) # we expect to fail in tar 1.27
+-
+ AT_TAR_CHECK([
+ mkdir foo
+ echo foo/file > foo/file
+-- 
+2.9.3
+

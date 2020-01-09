@@ -1,0 +1,170 @@
+From c4a4cafaa330793d776b001c272bf19869aac39c Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org.ua>
+Date: Mon, 23 Sep 2013 19:35:29 +0300
+Subject: [PATCH] Changes for compatibility with Slackware installation
+ scripts.
+
+* src/buffer.c (short_read): the "Record size" message
+is controlled by the WARN_RECORD_SIZE warning_option bit.
+* src/common.h (keep_directory_symlink_option): New global.
+(WARN_RECORD_SIZE): New constant.
+(WARN_VERBOSE_WARNINGS): Add WARN_RECORD_SIZE.
+* src/extract.c (extract_dir): If keep_directory_symlink_option is
+set, follow symlinks to directories.
+* src/suffix.c (compression_suffixes): Add support for txz
+suffix.
+* src/tar.c (KEEP_DIRECTORY_SYMLINK_OPTION): New constant.
+(options): New option --keep-directory-symlink.
+(parse_opt): Handle this option.
+* src/warning.c: Implement "record-size" warning control.
+
+* NEWS: Update.
+* doc/tar.texi: Document new features.
+---
+ NEWS          | 12 ++++++++++++
+ doc/tar.texi  | 15 +++++++++++++++
+ src/common.h  |  2 ++
+ src/extract.c | 19 +++++++++++++++++++
+ src/tar.c     |  8 ++++++++
+ 5 files changed, 56 insertions(+)
+
+diff --git a/NEWS b/NEWS
+index 8f3c416..36a27da 100644
+--- a/NEWS
++++ b/NEWS
+@@ -6,6 +6,18 @@ Please send GNU tar bug reports to <bug-tar@gnu.org>
+ When creating a PAX-format archive, tar no longer arbitrarily restricts
+ the size of the representation of a sparse file to be less than 8 GiB.
+ 
++* New command line option --keep-directory-symlink
++
++By default, if when trying to extract a directory from the archive,
++tar discovers that the corresponding file name already exists and is a
++symbolic link, it first unlinks the entry, and then extracts the directory.
++
++This option disables this behavior and instructs tar to follow
++symlinks to directories when extracting from the archive.
++
++It is mainly intended to provide compatibility with the Slackware
++installation scripts.
++
+ 
+ version 1.26 - Sergey Poznyakoff, 2011-03-12
+ 
+diff --git a/doc/tar.texi b/doc/tar.texi
+index 6bd59c7..fb03b85 100644
+--- a/doc/tar.texi
++++ b/doc/tar.texi
+@@ -2923,6 +2923,21 @@ Specifies that @command{tar} should ask the user for confirmation before
+ performing potentially destructive options, such as overwriting files.
+ @xref{interactive}.
+ 
++@opsummary{--keep-directory-symlink}
++@item --keep-directory-symlink
++
++This option changes the behavior of tar when it encounters a symlink
++with the same name as the directory that it is about to extract.  By
++default, in this case tar would first remove the symlink and then
++proceed extracting the directory.
++
++The @option{--keep-directory-symlink} option disables this behavior
++and instructs tar to follow symlinks to directories when extracting
++from the archive.
++
++It is mainly intended to provide compatibility with the Slackware
++installation scripts.
++
+ @opsummary{keep-newer-files}
+ @item --keep-newer-files
+ 
+diff --git a/src/common.h b/src/common.h
+index 16ba401..274da01 100644
+--- a/src/common.h
++++ b/src/common.h
+@@ -192,6 +192,8 @@ enum old_files
+ };
+ GLOBAL enum old_files old_files_option;
+ 
++GLOBAL bool keep_directory_symlink_option;
++
+ /* Specified file name for incremental list.  */
+ GLOBAL const char *listed_incremental_option;
+ /* Incremental dump level */
+diff --git a/src/extract.c b/src/extract.c
+index 3afb95d..b622a2a 100644
+--- a/src/extract.c
++++ b/src/extract.c
+@@ -854,7 +854,21 @@ apply_nonancestor_delayed_set_stat (char const *file_name, bool after_links)
+ }
+ 
+ 
++static bool
++is_directory_link (const char *file_name)
++{
++  struct stat st;
++  int e = errno;
++  int res;
+ 
++  res = (fstatat (chdir_fd, file_name, &st, AT_SYMLINK_NOFOLLOW) == 0 &&
++	 S_ISLNK (st.st_mode) &&
++	 fstatat (chdir_fd, file_name, &st, 0) == 0 &&
++	 S_ISDIR (st.st_mode));
++  errno = e;
++  return res;
++}
++
+ /* Extractor functions for various member types */
+ 
+ static int
+@@ -910,10 +924,15 @@ extract_dir (char *file_name, int typeflag)
+ 
+       if (errno == EEXIST
+ 	  && (interdir_made
++	      || keep_directory_symlink_option
+ 	      || old_files_option == DEFAULT_OLD_FILES
+ 	      || old_files_option == OVERWRITE_OLD_FILES))
+ 	{
+ 	  struct stat st;
++
++	  if (keep_directory_symlink_option && is_directory_link (file_name))
++	    return 0;
++
+ 	  if (deref_stat (file_name, &st) == 0)
+ 	    {
+ 	      current_mode = st.st_mode;
+diff --git a/src/tar.c b/src/tar.c
+index 18277e4..d62ca0e 100644
+--- a/src/tar.c
++++ b/src/tar.c
+@@ -290,6 +290,7 @@ enum
+   IGNORE_COMMAND_ERROR_OPTION,
+   IGNORE_FAILED_READ_OPTION,
+   INDEX_FILE_OPTION,
++  KEEP_DIRECTORY_SYMLINK_OPTION,
+   KEEP_NEWER_FILES_OPTION,
+   LEVEL_OPTION,
+   LZIP_OPTION,
+@@ -488,6 +489,9 @@ static struct argp_option options[] = {
+   {"overwrite-dir", OVERWRITE_DIR_OPTION, 0, 0,
+    N_("overwrite metadata of existing directories when extracting (default)"),
+    GRID+1 },
++  {"keep-directory-symlink", KEEP_DIRECTORY_SYMLINK_OPTION, 0, 0,
++   N_("preserve existing symlinks to directories when extracting"),
++   GRID+1 },
+ #undef GRID
+ 
+ #define GRID 40
+@@ -1878,6 +1882,10 @@ parse_opt (int key, char *arg, struct argp_state *state)
+       ignore_failed_read_option = true;
+       break;
+ 
++    case KEEP_DIRECTORY_SYMLINK_OPTION:
++      keep_directory_symlink_option = true;
++      break;
++
+     case KEEP_NEWER_FILES_OPTION:
+       old_files_option = KEEP_NEWER_FILES;
+       break;
+-- 
+2.9.3
+

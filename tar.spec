@@ -5,7 +5,7 @@ Summary: A GNU file archiving program
 Name: tar
 Epoch: 2
 Version: 1.26
-Release: 31%{?dist}
+Release: 32%{?dist}
 License: GPLv3+
 Group: Applications/Archiving
 URL: http://www.gnu.org/software/tar/
@@ -128,6 +128,29 @@ Patch19: tar-1.26-default-acls.patch
 # ~> rhbz#1347396
 Patch20: tar-1.26-dont-segfault-with-disabled-selinux.patch
 
+# Restore incremental backups correctly, files were not being removed
+# ~> upstream commits: 738fb9c2f44 b6979c7278e f86e0605d0e
+# ~> rhbz#1184697
+Patch21: tar-1.26-restore-incremental-backups.patch
+
+# Fix the behavior of tar when --directory option is used together with
+# --remove-files.
+# ~> upstream commits: e3d28d84bda b41b004638f f7077dd38b0 d3fd92c6fb2
+# 	d28eee6b4f1 74ce228f6df 3125d311e17 3de5db2a151 fc58a8bd984
+#	fcde08534bd e6fcc73efa7
+# ~> rhbz#1319820
+Patch22: tar-1.26-directory_with_remove-files.patch
+
+# Repair the ignorance of --xattrs-exclude/include options
+# ~> upstream: bb6ddd8e04c and c81a0853bb8
+# ~> rhbz#1341786
+Patch23: tar-1.26-xattrs-exclude-include-repair.patch
+
+# Intorduce new option "--keep-directory-symlink", backported from version 1.27
+# ~> upstream: 2c06a809180
+# ~> rhbz#1350640
+Patch24: tar-1.26-keep-directory-symlink.patch
+
 # Silence gcc warnings
 # ~> upstream tar: 17f99bc6f, 5bb0433
 # ~> upstream paxutils: 0b3d84a0
@@ -186,6 +209,10 @@ the rmt package on the remote box.
 %patch18 -p1 -b .sparse-stat-detection
 %patch19 -p1 -b .default-acls
 %patch20 -p1 -b .disabled-selinux
+%patch21 -p1 -b .incremental-backups
+%patch22 -p1 -b .directory
+%patch23 -p1 -b .xattrs-exclude-include
+%patch24 -p1 -b .keep-directory-symlink
 %patch999 -p1 -b .silence-gcc
 
 autoreconf -v
@@ -244,6 +271,13 @@ fi
 %{_infodir}/tar.info*
 
 %changelog
+* Tue Feb 28 2017 Tomas Repik <trepik@redhat.com> - 2:1.26-32
+- restore incremental backups correctly, files were not being removed (rhbz#1184697)
+- fix the behavior of tar when --directory option is used together with
+  --remove-files
+- repair the ignorance of --xattrs-exclude/include options (rhbz#1341786)
+- Intorduce new option '--keep-directory-symlink'
+
 * Mon Jun 20 2016 Pavel Raiskup <praiskup@redhat.com> - 1.26-31
 - avoid double free in selinux code (rhbz#1347396)
 

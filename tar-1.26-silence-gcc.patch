@@ -101,19 +101,6 @@ index 273269a..796d7aa 100644
  
    dumpdir_buffer = directory_contents (scan_directory (&current_stat_info));
  
-diff --git a/src/update.c b/src/update.c
-index 4739e0d..3b28734 100644
---- a/src/update.c
-+++ b/src/update.c
-@@ -145,7 +145,7 @@ update_archive (void)
- 		    if (S_ISDIR (s.st_mode))
- 		      {
- 			char *p, *dirp;
--			DIR *stream;
-+			DIR *stream = NULL; /* upstream commit 5bb043350790 */
- 			int fd = openat (chdir_fd, name->name,
- 					 open_read_flags | O_DIRECTORY);
- 			if (fd < 0)
 diff --git a/tests/genfile.c b/tests/genfile.c
 index 8541be6..fa480ef 100644
 --- a/tests/genfile.c

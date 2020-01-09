@@ -1,0 +1,121 @@
+diff -urN tar-1.26/src/xattrs.c tar-1.26new/src/xattrs.c
+--- tar-1.26/src/xattrs.c	2017-01-10 10:58:11.894958586 +0100
++++ tar-1.26new/src/xattrs.c	2017-01-10 11:54:23.418221159 +0100
+@@ -436,8 +436,12 @@
+   clear_mask_map (&xattrs_setup.excl);
+ }
+ 
+-/* get all xattrs from file given by FILE_NAME or FD (when non-zero).  This
+-   includes all the user.*, security.*, system.*, etc. available domains */
++static bool xattrs_masked_out (const char *kw, bool archiving);
++
++/* get xattrs from file given by FILE_NAME or FD (when non-zero)
++   xattrs are checked against the user supplied include/exclude mask
++   if no mask is given this includes all the user.*, security.*, system.*,
++   etc. available domains */
+ void
+ xattrs_xattrs_get (int parentfd, char const *file_name,
+                    struct tar_stat_info *st, int fd)
+@@ -482,8 +486,6 @@
+               size_t len = strlen (attr);
+               ssize_t aret = 0;
+ 
+-              /* Archive all xattrs during creation, decide at extraction time
+-               * which ones are of interest/use for the target filesystem. */
+               while (((fd == 0)
+                       ? ((aret = lgetxattrat (parentfd, file_name, attr,
+                                               val, asz)) == -1)
+@@ -494,7 +496,10 @@
+                 }
+ 
+               if (aret != -1)
+-                xheader_xattr_add (st, attr, val, aret);
++                {
++                  if (!xattrs_masked_out (attr, true))
++                    xheader_xattr_add (st, attr, val, aret);
++                }
+               else if (errno != ENOATTR)
+                 call_arg_warn ((fd == 0) ? "lgetxattrat"
+                                : "fgetxattr", file_name);
+diff -urN tar-1.26/tests/Makefile.am tar-1.26new/tests/Makefile.am
+--- tar-1.26/tests/Makefile.am	2017-01-10 10:58:11.894958586 +0100
++++ tar-1.26new/tests/Makefile.am	2017-01-10 11:53:55.046987231 +0100
+@@ -177,6 +177,7 @@
+  xattr03.at\
+  xattr04.at\
+  xattr05.at\
++ xattr06.at\
+  acls01.at\
+  acls02.at\
+  acls03.at\
+diff -urN tar-1.26/tests/testsuite.at tar-1.26new/tests/testsuite.at
+--- tar-1.26/tests/testsuite.at	2017-01-10 10:58:11.896958604 +0100
++++ tar-1.26new/tests/testsuite.at	2017-01-10 11:53:55.047987240 +0100
+@@ -338,6 +338,7 @@
+ m4_include([xattr03.at])
+ m4_include([xattr04.at])
+ m4_include([xattr05.at])
++m4_include([xattr06.at])
+ 
+ m4_include([acls01.at])
+ m4_include([acls02.at])
+diff -urN tar-1.26/tests/xattr06.at tar-1.26new/tests/xattr06.at
+--- tar-1.26/tests/xattr06.at	1970-01-01 01:00:00.000000000 +0100
++++ tar-1.26new/tests/xattr06.at	2017-01-10 11:54:23.418221159 +0100
+@@ -0,0 +1,56 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++#
++# Test suite for GNU tar.
++# Copyright 2012-2014, 2016 Free Software Foundation, Inc.
++
++# This file is part of GNU tar.
++
++# GNU tar is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++
++# GNU tar is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++#
++# Test description:  Test for exclude of xattr during archive creation
++#
++# Relevant mailing list thread:
++#
++# http://lists.gnu.org/archive/html/bug-tar/2016-05/msg00031.html
++
++AT_SETUP([xattrs: exclude xattrs on create ])
++AT_KEYWORDS([xattrs xattr06])
++
++AT_TAR_CHECK([
++AT_XATTRS_PREREQ
++
++mkdir dir
++mkdir output
++genfile --file dir/file
++
++for attr in excluded incla inclb inclc incl_excluded
++do
++  setfattr -n user.${attr} -v value dir/file || AT_SKIP_TEST
++done
++
++tar --xattrs-include=user.incl'*' --xattrs-exclude=user.incl_excluded -cf archive.tar -C dir .
++tar -xf archive.tar --xattrs-include=user.incl[[ab]] --xattrs-exclude=user.inclb -C output
++
++getfattr -d output/file | grep -v \
++    -e excluded \
++    -e inclb \
++    -e inclc > filtered
++getfattr -d output/file > full
++# if they differ then the attribute is still present
++diff filtered full
++],
++[0],
++[])
++
++AT_CLEANUP
