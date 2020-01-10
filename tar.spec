@@ -5,7 +5,7 @@ Summary: A GNU file archiving program
 Name: tar
 Epoch: 2
 Version: 1.23
-Release: 13%{?dist}
+Release: 14%{?dist}
 License: GPLv3+
 Group: Applications/Archiving
 URL: http://www.gnu.org/software/tar/
@@ -84,8 +84,18 @@ Patch25: tar-1.23-verify.patch
 # ~> gnulib upstream: 0bc30ce 0c4be75 c96bab3
 Patch26: tar-1.23-fnmatch-sync.patch
 
+# Fix problem with bit UIDs/GIDs (> 2^21) and --posix format.
+# ~> Resolves: rhbz#1247788
+# ~> upstream (it is part of df7b55a8f6354e)
+Patch27: tar-1.23-posix-biguid.patch
+
+# Don't add "false" default acls when during extraction (#1220891)
+# ~> #1220891
+# ~> upstream (7fe7adcbb985e)
+Patch28: tar-1.23-default-acls.patch
+
 Requires: info
-BuildRequires: autoconf automake gzip texinfo gettext libacl-devel gawk rsh
+BuildRequires: autoconf automake gzip texinfo gettext libacl-devel gawk rsh acl
 %if %{WITH_SELINUX}
 BuildRequires: libselinux-devel
 %endif
@@ -133,6 +143,8 @@ the rmt package.
 %patch24 -p1 -b .xz-recognition
 %patch25 -p1 -b .verify
 %patch26 -p1 -b .fnmatch-sync
+%patch27 -p1 -b .biguid
+%patch28 -p1 -b .default-acls
 autoreconf
 
 %build
@@ -193,6 +205,10 @@ fi
 %{_infodir}/tar.info*
 
 %changelog
+* Mon Nov 09 2015 Pavel Raiskup <praiskup@redhat.com> - 1.23-14
+- fix error while storing UID > 2^21 into posix format archive (rhbz#1247788)
+- don't mistakenly set default ACLs (#1220891)
+
 * Thu Feb 05 2015 Pavel Raiskup <praiskup@redhat.com> - 1.23-13
 - sync manual page with MPO contents (#1119312)
 
