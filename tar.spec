@@ -5,7 +5,7 @@ Summary: A GNU file archiving program
 Name: tar
 Epoch: 2
 Version: 1.23
-Release: 9%{?dist}
+Release: 11%{?dist}
 License: GPLv3+
 Group: Applications/Archiving
 URL: http://www.gnu.org/software/tar/
@@ -64,6 +64,11 @@ Patch20: tar-1.23-sigpipe-prereq-testsuite.patch
 # backport of patch for bad matching filenames while extracting --posix &&
 # --sparse archive
 Patch21: tar-1.23-longnames.patch
+# make sure that file matching is done before file transformation (#875727)
+Patch22: tar-1.23-longnames-match-before-transform.patch
+# un-hash the file name before the 'file' is free()'d (#877769)
+Patch23: tar-1.23-coredump.patch
+
 Requires: info
 BuildRequires: autoconf automake gzip texinfo gettext libacl-devel gawk rsh
 %if %{WITH_SELINUX}
@@ -108,6 +113,8 @@ the rmt package.
 %patch19 -p1 -b .sigpipe-warn-fix
 %patch20 -p1 -b .sigpipe-testsuite-prereq
 %patch21 -p1 -b .longnames
+%patch22 -p1 -b .longnames-match-before-transform
+%patch23 -p1 -b .coredump-hash
 autoreconf
 
 %build
@@ -168,6 +175,14 @@ fi
 %{_infodir}/tar.info*
 
 %changelog
+* Mon Nov 19 2012 Pavel Raiskup <praiskup@redhat.com> - 2:1.23-11
+- avoid crash by backporting upstream patch for internal construction of
+  file-name hash table (#877769).
+
+* Wed Nov 14 2012 Pavel Raiskup <praiskup@redhat.com> - 2:1.23-10
+- backport upstream patch to make sure that file matching is done before file
+  file-name transformation (#875727)
+
 * Thu Sep 27 2012 Pavel Raiskup <praiskup@redhat.com> 2:1.23-9
 - backport also --listed-incremental crash fix, this patch is in upstream and in
   fedora from f14 (related to #841308)
