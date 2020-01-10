@@ -1,0 +1,25 @@
+From 45a574151ae64ae4f9b0d99302f7da6d9d8451a9 Mon Sep 17 00:00:00 2001
+From: Sergey Poznyakoff <gray@gnu.org.ua>
+Date: Fri, 27 Aug 2010 15:36:24 +0300
+Subject: [PATCH] Fix --remove-files in update/append mode.
+
+* src/update.c (update_archive): Call finish_deferred_unlinks when
+done.
+---
+ src/update.c |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/src/update.c b/src/update.c
+index d00e8d6..73b9d53 100644
+--- a/src/update.c
++++ b/src/update.c
+@@ -230,5 +230,6 @@ update_archive (void)
+ 
+   write_eot ();
+   close_archive ();
++  finish_deferred_unlinks ();
+   names_notfound ();
+ }
+-- 
+1.7.4.4
+

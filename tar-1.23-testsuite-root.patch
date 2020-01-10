@@ -1,0 +1,27 @@
+From 18236ef6c3554f1076dc5bffcfb53522089c18a5 Mon Sep 17 00:00:00 2001
+From: Pavel Raiskup <praiskup@redhat.com>
+Date: Thu, 29 Mar 2012 15:23:02 +0200
+Subject: [PATCH] Testsuite edit.
+
+tests/remfiles01.at: Skip if run with root privileges.
+
+From upstream commit: 67b4f3519d838c6f16f5b6b63c0b9b8669fb3dd9
+---
+ tests/remfiles01.at |    1 +
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+
+diff --git a/tests/remfiles01.at b/tests/remfiles01.at
+index 940fd95..228623b 100644
+--- a/tests/remfiles01.at
++++ b/tests/remfiles01.at
+@@ -32,6 +32,7 @@ unset TAR_OPTIONS
+ AT_CHECK([
+ AT_GZIP_PREREQ
+ AT_SORT_PREREQ
++AT_UNPRIVILEGED_PREREQ
+ 
+ mkdir dir
+ cd dir
+-- 
+1.7.4.4
+

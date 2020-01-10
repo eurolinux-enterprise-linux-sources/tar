@@ -1,0 +1,116 @@
+From c6596af13f5d5dda35199ab8ca117ab92e779887 Mon Sep 17 00:00:00 2001
+From: Pavel Raiskup <praiskup@redhat.com>
+Date: Thu, 29 Mar 2012 16:50:31 +0200
+Subject: [PATCH] Fix undesired error exit on receiving SIGPIPE.
+
+upstream commit: 340dbf5aabfee4e1e657f8ebf202a2fee1750a63
+---
+ src/tar.c           |    2 --
+ tests/Makefile.am   |    1 +
+ tests/remfiles01.at |    4 +++-
+ tests/sigpipe.at    |   39 +++++++++++++++++++++++++++++++++++++++
+ tests/testsuite.at  |    2 ++
+ 5 files changed, 45 insertions(+), 3 deletions(-)
+ create mode 100644 tests/sigpipe.at
+
+diff --git a/src/tar.c b/src/tar.c
+index 7038448..205b3b6 100644
+--- a/src/tar.c
++++ b/src/tar.c
+@@ -2650,8 +2650,6 @@ main (int argc, char **argv)
+ 
+   obstack_init (&argv_stk);
+ 
+-  /* Ensure default behavior for some signals */
+-  signal (SIGPIPE, SIG_IGN);
+   /* System V fork+wait does not work if SIGCHLD is ignored.  */
+   signal (SIGCHLD, SIG_DFL);
+ 
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 13d4a77..f57edc8 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -126,6 +126,7 @@ TESTSUITE_AT = \
+  shortfile.at\
+  shortupd.at\
+  shortrec.at\
++ sigpipe.at\
+  sparse01.at\
+  sparse02.at\
+  sparse03.at\
+diff --git a/tests/remfiles01.at b/tests/remfiles01.at
+index 228623b..9e92521 100644
+--- a/tests/remfiles01.at
++++ b/tests/remfiles01.at
+@@ -52,7 +52,9 @@ EC=$?
+ sed -n '/(child)/p' err >&2
+ rm err
+ find . | sort
+-exit $EC
++# Gzip exit code is propagated to the shell. Usually it is
++# 141.  We convert all non-zero exits to 2 to make it predictable.
++test $EC && exit 2
+ ],
+ [2],
+ [.
+diff --git a/tests/sigpipe.at b/tests/sigpipe.at
+new file mode 100644
+index 0000000..9edca77
+--- /dev/null
++++ b/tests/sigpipe.at
+@@ -0,0 +1,39 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++
++# Test suite for GNU tar.
++# Copyright (C) 2010 Free Software Foundation, Inc.
++
++# This program is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3, or (at your option)
++# any later version.
++
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++
++# You should have received a copy of the GNU General Public License
++# along with this program.  If not, see <http://www.gnu.org/licenses/>.
++
++AT_SETUP([sigpipe handling])
++AT_KEYWORDS([sigpipe])
++
++# Description: Tar 1.23 ignored sigpipe which lead to spurious "write
++# error" diagnostics when piping output to another programs.
++# Reported-by: "Dmitry V. Levin" <ldv@altlinux.org>
++# References: http://lists.gnu.org/archive/html/bug-tar/2010-03/msg00039.html
++#             <20100319184141.GC30047@wo.int.altlinux.org>
++
++AT_CHECK([
++genfile --length 2048 --file first
++genfile --length 2048 --file second
++genfile --length 2049 --file third
++
++tar cf archive first second third
++
++tar tf archive | :
++],
++[0])
++
++AT_CLEANUP
+diff --git a/tests/testsuite.at b/tests/testsuite.at
+index 557dcf7..ec08f24 100644
+--- a/tests/testsuite.at
++++ b/tests/testsuite.at
+@@ -233,6 +233,8 @@ m4_include([remfiles01.at])
+ m4_include([remfiles02.at])
+ m4_include([remfiles03.at])
+ 
++m4_include([sigpipe.at])
++
+ m4_include([star/gtarfail.at])
+ m4_include([star/gtarfail2.at])
+ 
+-- 
+1.7.4.4
+

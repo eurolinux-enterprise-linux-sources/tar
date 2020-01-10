@@ -1,0 +1,225 @@
+From 949240d031eea618df2c178ce6b59017b2bc42e1 Mon Sep 17 00:00:00 2001
+From: Pavel Raiskup <praiskup@redhat.com>
+Date: Mon, 13 Feb 2012 14:17:46 +0100
+Subject: [PATCH] lost of data caused by --remove-files
+
+--remove-files relied on canonicalize_file_name, which replaces symlinks in file
+name components with the directories they point to. Due to this, tar effectively
+ignored existence of symbolic links and was unable to remove a directory that
+contained any (Alexander Kozlov <akozlov@nada.kth.se>, 2010-03-15).
+---
+ src/misc.c          |   98 ++++++++++++++++++++++++++++++++++++++++++++++++--
+ tests/Makefile.am   |    1 +
+ tests/remfiles03.at |   45 +++++++++++++++++++++++
+ tests/testsuite.at  |    1 +
+ 4 files changed, 141 insertions(+), 4 deletions(-)
+ create mode 100644 tests/remfiles03.at
+
+diff --git a/src/misc.c b/src/misc.c
+index f81111f..ff7e4b2 100644
+--- a/src/misc.c
++++ b/src/misc.c
+@@ -25,7 +25,6 @@
+ #include <xgetcwd.h>
+ #include <unlinkdir.h>
+ #include <utimens.h>
+-#include <canonicalize.h>
+ 
+ #if HAVE_STROPTS_H
+ # include <stropts.h>
+@@ -34,6 +33,10 @@
+ # include <sys/filio.h>
+ #endif
+ 
++#ifndef DOUBLE_SLASH_IS_DISTINCT_ROOT
++# define DOUBLE_SLASH_IS_DISTINCT_ROOT 0
++#endif
++
+ 
+ /* Handling strings.  */
+ 
+@@ -230,10 +233,99 @@ zap_slashes (char *name)
+   return name;
+ }
+ 
++/* Normalize NAME by resolving any relative references and
++   removing trailing slashes.  Destructive version: modifies its argument. */ 
++int
++normalize_filename_x (char *name)
++{
++  char *p, *q;
++
++  p = name;
++  if (DOUBLE_SLASH_IS_DISTINCT_ROOT && ISSLASH (*p))
++    p++;
++
++  /* Remove /./, resolve /../ and compress sequences of slashes */
++  for (q = p; *q; )
++    {
++      if (ISSLASH (*q))
++	{
++	  *p++ = *q++;
++	  while (ISSLASH (*q))
++	    q++;
++	  continue;
++	}
++      else if (p == name)
++	{
++	  if (*q == '.')
++	    {
++	      if (ISSLASH (q[1]))
++		{
++		  q += 2;
++		  continue;
++		}
++	      if (q[1] == '.' && ISSLASH (q[2]))
++		return 1;
++	    }
++	}
++      else
++	{
++	  if (*q == '.' && ISSLASH (p[-1]))
++	    {
++	      if (ISSLASH (q[1]))
++		{
++		  q += 2;
++		  while (ISSLASH (*q))
++		    q++;
++		  continue;
++		}
++	      else if (q[1] == '.' && ISSLASH (q[2]))
++		{
++		  do
++		    {
++		      --p;
++		    }
++		  while (p > name && !ISSLASH (p[-1]));
++		  q += 3;
++		  continue;
++		}
++	    }
++	}
++      *p++ = *q++;
++    }
++
++  /* Remove trailing slashes */
++  while (p - 1 > name && ISSLASH (p[-1]))
++    p--;
++  
++  *p = 0;
++  return 0;
++}
++
++/* Normalize NAME by resolving any relative references, removing trailing
++   slashes, and converting it to absolute file name.  Return the normalized
++   name, or NULL in case of error. */
++
+ char *
+ normalize_filename (const char *name)
+ {
+-  return zap_slashes (canonicalize_filename_mode (name, CAN_MISSING));
++  char *copy;
++
++  if (name[0] != '/')
++    {
++      copy = xgetcwd ();
++      copy = xrealloc (copy, strlen (copy) + strlen (name) + 2);
++
++      strcat (copy, "/");
++      strcat (copy, name);
++    }
++  else
++    copy = xstrdup (name);
++  if (normalize_filename_x (copy))
++    {
++      free (copy);
++      return NULL;
++    }
++  return xrealloc (copy, strlen (copy) + 1);
+ }
+ 
+ 
+@@ -870,5 +962,3 @@ namebuf_name (namebuf_t buf, const char *name)
+   return buf->buffer;
+ }
+ 
+-
+-  
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 11b8fda..e6f25bc 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -118,6 +118,7 @@ TESTSUITE_AT = \
+  rename05.at\
+  remfiles01.at\
+  remfiles02.at\
++ remfiles03.at\
+  same-order01.at\
+  same-order02.at\
+  shortfile.at\
+diff --git a/tests/remfiles03.at b/tests/remfiles03.at
+new file mode 100644
+index 0000000..02104e9
+--- /dev/null
++++ b/tests/remfiles03.at
+@@ -0,0 +1,45 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++
++# Test suite for GNU tar.
++# Copyright (C) 2009 Free Software Foundation, Inc.
++
++# This program is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3, or (at your option)
++# any later version.
++
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
++# 02110-1301, USA.
++
++# Description: Called with --remove-files, tar 1.23 failed
++# to remove a directory if it contained symlinks to another files
++# within that directory.
++# Reported-by: Alexander Kozlov <akozlov@nada.kth.se>
++# References: http://lists.gnu.org/archive/html/bug-tar/2010-03/msg00028.html
++#             <Pine.SOC.4.64.1003150951060.28948@faun.nada.kth.se>
++
++AT_SETUP([remove-files with symbolic links])
++AT_KEYWORDS([create remove-files remfiles03])
++
++AT_CHECK([
++mkdir a
++mkdir a/b
++ln -s b a/c || AT_SKIP_TEST
++tar --remove-files -cf a.tar a
++genfile --stat a
++],
++[0],
++[],
++[genfile: stat(a) failed: No such file or directory
++])
++
++AT_CLEANUP
++
++
+diff --git a/tests/testsuite.at b/tests/testsuite.at
+index 4d9c3fd..0d99bb4 100644
+--- a/tests/testsuite.at
++++ b/tests/testsuite.at
+@@ -227,6 +227,7 @@ m4_include([grow.at])
+ 
+ m4_include([remfiles01.at])
+ m4_include([remfiles02.at])
++m4_include([remfiles03.at])
+ 
+ m4_include([star/gtarfail.at])
+ m4_include([star/gtarfail2.at])
+-- 
+1.7.4.4
+

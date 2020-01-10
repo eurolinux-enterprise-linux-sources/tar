@@ -1,0 +1,45 @@
+From 98b827708993f017540a359bc4f99e106bb2df5c Mon Sep 17 00:00:00 2001
+From: Pavel Raiskup <praiskup@redhat.com>
+Date: Tue, 14 Feb 2012 14:41:51 +0100
+Subject: [PATCH] optimize -c --sparse when file is entirely sparse
+
+---
+ src/sparse.c |   10 ++++++----
+ 1 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/src/sparse.c b/src/sparse.c
+index c9d6473..10d1339 100644
+--- a/src/sparse.c
++++ b/src/sparse.c
+@@ -216,15 +216,16 @@ sparse_scan_file (struct tar_sparse_file *file)
+   struct tar_stat_info *st = file->stat_info;
+   int fd = file->fd;
+   char buffer[BLOCKSIZE];
+-  size_t count;
++  size_t count = 0;
+   off_t offset = 0;
+   struct sp_array sp = {0, 0};
+ 
+-  if (!lseek_or_error (file, 0))
+-    return false;
+-
+   st->archive_file_size = 0;
+   
++  if (ST_NBLOCKS (st->stat) == 0)
++    offset = st->stat.st_size;
++  else
++    {
+   if (!tar_sparse_scan (file, scan_begin, NULL))
+     return false;
+ 
+@@ -254,6 +255,7 @@ sparse_scan_file (struct tar_sparse_file *file)
+ 
+       offset += count;
+     }
++    }
+ 
+   if (sp.numbytes == 0)
+     sp.offset = offset;
+-- 
+1.7.4.4
+
