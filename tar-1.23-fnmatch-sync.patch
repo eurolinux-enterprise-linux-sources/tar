@@ -1,0 +1,87 @@
+From: Pavel Raiskup <praiskup@redhat.com>
+Date: Mon, 26 Jan 2015 10:14:00 +0100
+Subject: [PATCH] fnmatch: sync glibc change fixing Bugzilla bug #12378
+
+* lib/fnmatch_loop.c (FCT): When matching '[' keep track of
+beginning and fall back to matching as normal character if the
+string ends before the matching ']' is found.  This is what POSIX
+requires.
+
+[upstream gnulib commit 0bc30ce]
+-----------------------------------------------------------------
+
+fnmatch: avoid compiler warning
+
+Detected on Ubuntu 10.04, where the glibc fnmatch fix is not yet
+present; also reproduced via:
+$ gl_cv_func_fnmatch_posix=no CFLAGS=-Wall \
+    ./gnulib-tool --with-tests --test fnmatch
+
+In file included from gllib/fnmatch.c:172:0:
+gllib/fnmatch_loop.c: In function ‘internal_fnmatch’:
+gllib/fnmatch_loop.c:203:28: error: initialization discards qualifiers from pointer target type
+gllib/fnmatch_loop.c:204:28: error: initialization discards qualifiers from pointer target type
+
+* lib/fnmatch_loop.c (FCT): Use correct type.
+Reported by Matthias Bolte.
+
+[upstream gnulib commit: 0c4be75]
+-----------------------------------------------------------------
+
+fnmatch: don't goto over declaration
+
+* lib/fnmatch_loop.c (FCT): Hoist local up one level, to avoid
+undefined behavior for goto over a declaration.
+Problem reported by Charlie Brown in
+<http://lists.gnu.org/archive/html/bug-gnulib/2013-07/msg00009.html>.
+
+[upstream gnulib commit: c96bab3]
+---
+ gnu/fnmatch_loop.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/gnu/fnmatch_loop.c b/gnu/fnmatch_loop.c
+index c46099a..097f9da 100644
+--- a/gnu/fnmatch_loop.c
++++ b/gnu/fnmatch_loop.c
+@@ -203,6 +203,8 @@ FCT (const CHAR *pattern, const CHAR *string, const CHAR *string_end,
+         case L_('['):
+           {
+             /* Nonzero if the sense of the character class is inverted.  */
++            const CHAR *p_init = p;
++            const CHAR *n_init = n;
+             register bool not;
+             CHAR cold;
+             UCHAR fn;
+@@ -229,6 +231,8 @@ FCT (const CHAR *pattern, const CHAR *string, const CHAR *string_end,
+             c = *p++;
+             for (;;)
+               {
++		bool is_range = false;
++
+                 if (!(flags & FNM_NOESCAPE) && c == L_('\\'))
+                   {
+                     if (*p == L_('\0'))
+@@ -413,12 +417,15 @@ FCT (const CHAR *pattern, const CHAR *string, const CHAR *string_end,
+                   }
+ #endif
+                 else if (c == L_('\0'))
+-                  /* [ (unterminated) loses.  */
+-                  return FNM_NOMATCH;
++                  {
++                    /* [ unterminated, treat as normal character.  */
++                    p = p_init;
++                    n = n_init;
++                    c = L_('[');
++                    goto normal_match;
++                  }
+                 else
+                   {
+-                    bool is_range = false;
+-
+ #ifdef _LIBC
+                     bool is_seqval = false;
+ 
+-- 
+2.1.0
+

@@ -1,0 +1,98 @@
+diff --git a/NEWS b/NEWS
+index 3254266..6f4878d 100644
+--- a/NEWS
++++ b/NEWS
+@@ -4,6 +4,9 @@ Please send GNU tar bug reports to <bug-tar@gnu.org>
+ 
+ version 1.23 - Sergey Poznyakoff, 2010-03-10
+ 
++* Bugfixes
++** Fix the --verify option, which broke in version 1.24.
++
+ * Record size autodetection
+ 
+ When listing or extracting archives, the actual record size is
+diff --git a/src/compare.c b/src/compare.c
+index 437ffb3..665ee63 100644
+--- a/src/compare.c
++++ b/src/compare.c
+@@ -616,8 +616,10 @@ verify_volume (void)
+ 		       (0, 0, _("A lone zero block at %s"),
+ 			STRINGIFY_BIGINT (current_block_ordinal (), buf)));
+             }
++          continue;
+ 	}
+-      
++
++      decode_header (current_header, &current_stat_info, &current_format, 1);
+       diff_archive ();
+       tar_stat_destroy (&current_stat_info);
+     }
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 4543e44..a0170a0 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -146,6 +146,7 @@ TESTSUITE_AT = \
+  volsize.at\
+  volume.at\
+  verbose.at\
++ verify.at\
+  version.at\
+  xform-h.at\
+  star/gtarfail.at\
+diff --git a/tests/testsuite.at b/tests/testsuite.at
+index 03b2c44..46005e6 100644
+--- a/tests/testsuite.at
++++ b/tests/testsuite.at
+@@ -229,6 +229,8 @@ m4_include([update01.at])
+ m4_include([update02.at])
+ m4_include([update03.at])
+ 
++m4_include([verify.at])
++
+ m4_include([volume.at])
+ m4_include([volsize.at])
+ 
+diff --git a/tests/verify.at b/tests/verify.at
+new file mode 100644
+index 0000000..98ba22b
+--- /dev/null
++++ b/tests/verify.at
+@@ -0,0 +1,37 @@
++# Process this file with autom4te to create testsuite. -*- Autotest -*-
++
++# Test suite for GNU tar.
++# Copyright (C) 2010 Free Software Foundation, Inc.
++
++# This program is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3, or (at your option)
++# any later version.
++
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
++# 02110-1301, USA.
++
++# Check that tar --verify works.
++# Problem reported by Gilles Espinasse in
++# <http://lists.gnu.org/archive/html/bug-tar/2010-11/msg00065.html>.
++
++AT_SETUP([verify])
++AT_KEYWORDS([verify])
++
++AT_TAR_CHECK([
++touch foo
++tar -cvf archive.tar --verify foo
++],
++[0],
++[foo
++Verify foo
++])
++
++AT_CLEANUP

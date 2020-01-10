@@ -5,7 +5,7 @@ Summary: A GNU file archiving program
 Name: tar
 Epoch: 2
 Version: 1.23
-Release: 11%{?dist}
+Release: 13%{?dist}
 License: GPLv3+
 Group: Applications/Archiving
 URL: http://www.gnu.org/software/tar/
@@ -69,6 +69,21 @@ Patch22: tar-1.23-longnames-match-before-transform.patch
 # un-hash the file name before the 'file' is free()'d (#877769)
 Patch23: tar-1.23-coredump.patch
 
+# Fix the xz compression recognition.
+# ~> upstream: 80a6ef7d9
+# ~> #1056672
+Patch24: tar-1.23-xz-recognition.patch
+
+# Fix --verify option (-W)
+# ~> upstream: 24214ca5d50
+# ~> #923359
+Patch25: tar-1.23-verify.patch
+
+# fixes for fnmatch backported from gnulib
+# ~> #1034360
+# ~> gnulib upstream: 0bc30ce 0c4be75 c96bab3
+Patch26: tar-1.23-fnmatch-sync.patch
+
 Requires: info
 BuildRequires: autoconf automake gzip texinfo gettext libacl-devel gawk rsh
 %if %{WITH_SELINUX}
@@ -115,6 +130,9 @@ the rmt package.
 %patch21 -p1 -b .longnames
 %patch22 -p1 -b .longnames-match-before-transform
 %patch23 -p1 -b .coredump-hash
+%patch24 -p1 -b .xz-recognition
+%patch25 -p1 -b .verify
+%patch26 -p1 -b .fnmatch-sync
 autoreconf
 
 %build
@@ -175,6 +193,14 @@ fi
 %{_infodir}/tar.info*
 
 %changelog
+* Thu Feb 05 2015 Pavel Raiskup <praiskup@redhat.com> - 1.23-13
+- sync manual page with MPO contents (#1119312)
+
+* Fri Jan 23 2015 Pavel Raiskup <praiskup@redhat.com> - 1.23-12
+- better auto-recognize xz compressed archives (#1056672)
+- fix --verify option (#923359)
+- fnmatch fixes (#1034360)
+
 * Mon Nov 19 2012 Pavel Raiskup <praiskup@redhat.com> - 2:1.23-11
 - avoid crash by backporting upstream patch for internal construction of
   file-name hash table (#877769).
