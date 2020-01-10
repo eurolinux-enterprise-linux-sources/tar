@@ -5,7 +5,7 @@ Summary: A GNU file archiving program
 Name: tar
 Epoch: 2
 Version: 1.23
-Release: 14%{?dist}
+Release: 15%{?dist}
 License: GPLv3+
 Group: Applications/Archiving
 URL: http://www.gnu.org/software/tar/
@@ -94,6 +94,12 @@ Patch27: tar-1.23-posix-biguid.patch
 # ~> upstream (7fe7adcbb985e)
 Patch28: tar-1.23-default-acls.patch
 
+# Fix error when compressing/listing large sparse files (#1334559)
+# Improve sparse mode in genfile (build-time testsuite only)
+# upstream: 2f6c03cba ec94fbdf4 586a6263e
+# paxutils upstream: 45af1632a
+Patch29: tar-1.23-large-sparse-files.patch
+
 Requires: info
 BuildRequires: autoconf automake gzip texinfo gettext libacl-devel gawk rsh acl
 %if %{WITH_SELINUX}
@@ -145,6 +151,7 @@ the rmt package.
 %patch26 -p1 -b .fnmatch-sync
 %patch27 -p1 -b .biguid
 %patch28 -p1 -b .default-acls
+%patch29 -p1 -b .large-sparse-files
 autoreconf
 
 %build
@@ -205,6 +212,10 @@ fi
 %{_infodir}/tar.info*
 
 %changelog
+* Tue Jun 14 2016 Petr Kubat <pkubat@redhat.com> - 1.23-15
+- fix error when compressing/listing large sparse files (#1334559)
+- improve sparse mode in genfile for build-time-testsuite purposes
+
 * Mon Nov 09 2015 Pavel Raiskup <praiskup@redhat.com> - 1.23-14
 - fix error while storing UID > 2^21 into posix format archive (rhbz#1247788)
 - don't mistakenly set default ACLs (#1220891)
